@@ -2,14 +2,7 @@
 #define BMDBLECONTROLLER_H
 
 #include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
-#include <BLEClient.h>
-#include <BLERemoteService.h>
-#include <BLERemoteCharacteristic.h>
-#include <BLESecurity.h>
+#include <NimBLEDevice.h> // Use NimBLE library
 
 // Blackmagic Camera Service and Characteristic UUIDs (from the documentation)
 #define BLACKMAGIC_CAMERA_SERVICE_UUID  "291d567a-6d75-11e6-8b77-86f30ca893d3"
@@ -26,7 +19,7 @@ public:
   bool begin();
 
   // Connect to a discovered Blackmagic camera
-  bool connectToCamera(BLEAdvertisedDevice* device);
+  bool connectToCamera(NimBLEAdvertisedDevice* device);
 
   // Disconnect from the camera
   void disconnect();
@@ -71,31 +64,29 @@ public:
 
 
 private:
-  BLEClient* _pClient;
-  BLERemoteCharacteristic* _pOutgoingCharacteristic;
-  BLERemoteCharacteristic* _pIncomingCharacteristic;
-  BLERemoteCharacteristic* _pStatusCharacteristic;
-  bool _connected;
-  bool _bonded;
-  bool _callbacksSet; // Flag to track if callbacks have been registered
+    NimBLEClient* _pClient;
+    NimBLERemoteCharacteristic* _pOutgoingCharacteristic;
+    NimBLERemoteCharacteristic* _pIncomingCharacteristic;
+    NimBLERemoteCharacteristic* _pStatusCharacteristic;
+    bool _connected;
+    bool _bonded;
+    bool _callbacksSet; // Flag to track if callbacks have been registered
 
-  IncomingDataCallback _incomingDataCallback; // Pointer to user's data callback
-  StatusCallback _statusCallback;             // Pointer to user's status callback
+    IncomingDataCallback _incomingDataCallback; // Pointer to user's data callback
+    StatusCallback _statusCallback;             // Pointer to user's status callback
 
-    // Security object for bonding
-  BLESecurity* _pSecurity;
+    // Static callback functions (required by NimBLE library)
+    static void _incomingDataNotifyCallback(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+    static void _statusNotifyCallback(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+    // Add static callback for on connect
+    static void _onConnectCallback(NimBLEClient* pClient);
+    // Add static callback for numeric comparison
+    static void _onConfirmPIN(uint32_t pin);
 
-  // Static callback functions (required by ESP32 BLE library)
-  static void _incomingDataNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
-  static void _statusNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
-    // Add static callback for authentication complete
-  static void _authCompleteCallback(esp_ble_auth_cmpl_t* auth_cmpl);
-    // Add static callback for passkey notification
-  static uint32_t _passkeyNotifyCallback(uint32_t passkey);
-
-  // Helper function for fixed-point conversion
-  uint16_t _floatToFixed16(float value);
-  static BMDBLEController* _instance; //for static callback to work.
+    // Helper function for fixed-point conversion
+    uint16_t _floatToFixed16(float value);
+    static BMDBLEController* _instance; //for static callback to work.
+    uint32_t _passkey = 0; // To store the passkey
 };
 
 #endif
