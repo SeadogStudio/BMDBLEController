@@ -1,5 +1,5 @@
 #include <BMDBLEController.h>
-#include <NimBLEDevice.h>
+#include <NimBLEDevice.h> // Use NimBLE
 
 #define SERVICE_UUID "291d567a-6d75-11e6-8b77-86f30ca893d3" // Blackmagic Camera Service
 
@@ -7,8 +7,8 @@ BMDBLEController camera;
 bool doConnect = false;
 NimBLEAdvertisedDevice* foundDevice = nullptr;
 
-class MyAdvertisedDeviceCallbacks : public NimBLEAdvertisedDeviceCallbacks {
-    void onResult(NimBLEAdvertisedDevice* advertisedDevice) override {
+class MyAdvertisedDeviceCallbacks : public NimBLE::NimBLEAdvertisedDeviceCallbacks { // Corrected: Use NimBLE::
+    void onResult(NimBLEAdvertisedDevice* advertisedDevice) override { // Corrected: Add override
         Serial.printf("Advertised Device Found: %s\n", advertisedDevice->toString().c_str());
 
         if (advertisedDevice->haveServiceUUID() && advertisedDevice->isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
@@ -31,7 +31,7 @@ void incomingDataCallback(uint8_t* data, size_t length) {
 void statusCallback(uint8_t status) {
     Serial.print("Camera Status: 0x");
     Serial.println(status, HEX);
-    if (status & 0x01) {
+     if (status & 0x01) {
         Serial.println("Camera is ON");
     }
     if (status & 0x02) {
@@ -60,7 +60,7 @@ void setup() {
     pBLEScan->setActiveScan(true);
     pBLEScan->setInterval(100);
     pBLEScan->setWindow(99);
-    pBLEScan->start(0, new MyAdvertisedDeviceCallbacks()); // Scan forever, non-blocking.
+     pBLEScan->start(0, new MyAdvertisedDeviceCallbacks()); // Scan forever, non-blocking.
 }
 
 void loop() {
