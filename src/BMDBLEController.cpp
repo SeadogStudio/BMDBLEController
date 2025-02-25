@@ -1,6 +1,5 @@
 #include "BMDBLEController.h"
 
-// Static member initialization (required for the callbacks)
 BMDBLEController* BMDBLEController::_instance = nullptr;
 
 BMDBLEController::BMDBLEController() :
@@ -19,8 +18,9 @@ BMDBLEController::BMDBLEController() :
 
 bool BMDBLEController::begin() {
   BLEDevice::init(""); // Initialize the BLE device
-  return true; // Indicate successful initialization
+  return true; // Return true if initialization is successful
 }
+
 
 bool BMDBLEController::connectToCamera(BLEAdvertisedDevice* device) {
     if (_connected) {
@@ -61,8 +61,7 @@ bool BMDBLEController::connectToCamera(BLEAdvertisedDevice* device) {
     _callbacksSet = true; // Set the flag to indicate callbacks are registered
 
 
-    // Initiate bonding.  The simplest way to do this is to write to the
-    // status characteristic.  A value of 0x01 powers on the camera and
+    // Initiate bonding.  The simplest way to do this is to write to the status characteristic.  A value of 0x01 powers on the camera and
     // starts the bonding process.
     uint8_t powerOn = 0x01;
     _pStatusCharacteristic->writeValue(&powerOn, 1, false); // Write without response
@@ -71,18 +70,14 @@ bool BMDBLEController::connectToCamera(BLEAdvertisedDevice* device) {
     return true; // Connection successful (so far)
 }
 
+
 void BMDBLEController::disconnect() {
   if (_connected) {
-    // Deregister for notifications *before* disconnecting.  This is important
-    // to prevent the callbacks from being called after the object is invalid.
-    if (_callbacksSet) {
-        _pIncomingCharacteristic->deregisterForNotify();
-        _pStatusCharacteristic->deregisterForNotify();
-        _callbacksSet = false; // Clear the flag
-    }
+    //Deregister is not needed.
     _pClient->disconnect();
     _connected = false;
     _bonded = false; // Reset bonded status on disconnect
+    _callbacksSet = false;
   }
 }
 
@@ -94,12 +89,14 @@ bool BMDBLEController::isBonded() {
   return _bonded;
 }
 
+
 bool BMDBLEController::sendCommand(uint8_t* command, size_t length) {
     if (!_connected || !_pOutgoingCharacteristic) {
         return false; // Not connected or characteristic not found
     }
     // Use writeValue with the 'response' parameter set to false for best performance.
-    return _pOutgoingCharacteristic->writeValue(command, length, false);
+    _pOutgoingCharacteristic->writeValue(command, length, false); //Corrected: return type is void
+    return true; //Assume success if connected.
 }
 
 bool BMDBLEController::sendCommand(uint8_t destination, uint8_t commandId, uint8_t category, uint8_t parameter, uint8_t dataType, uint8_t operationType, uint8_t* data, size_t dataLength)
@@ -147,12 +144,12 @@ bool BMDBLEController::sendCommand(uint8_t destination, uint8_t commandId, uint8
     }
 
     // Send the command
-    bool result = _pOutgoingCharacteristic->writeValue(commandPacket, paddedLength, false);
-
+    //bool result = _pOutgoingCharacteristic->writeValue(commandPacket, paddedLength, false); //Corrected: return type is void
+     _pOutgoingCharacteristic->writeValue(commandPacket, paddedLength, false);
     // Clean up
     delete[] commandPacket;
 
-    return result;
+    return true; //Assume success if connected
 }
 
 
@@ -208,7 +205,7 @@ bool BMDBLEController::setAperture(float fStop) {
     uint16_t fixedValue = _floatToFixed16(apertureValue);
     // Split the 16-bit value into two bytes (little-endian)
     uint8_t data[2] = { (uint8_t)(fixedValue & 0xFF), (uint8_t)(fixedValue >> 8) };
-    return sendCommand(0, 0, 2, 0, 128, 0, data, 2); // Camera 0, Lens, Aperture (f-stop), fixed16, assign
+    return sendCommand(0, 0, 0, 2, 128, 0, data, 2); // Camera 0, Lens, Aperture (f-stop), fixed16, assign
 }
 
 bool BMDBLEController::setISO(int iso) {
