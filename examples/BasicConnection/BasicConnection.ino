@@ -1,14 +1,14 @@
 #include <BMDBLEController.h>
 #include <NimBLEDevice.h>
 
-#define SERVICE_UUID "291d567a-6d75-11e6-8b77-86f30ca893d3"
+#define SERVICE_UUID "291d567a-6d75-11e6-8b77-86f30ca893d3" // Blackmagic Camera Service
 
 BMDBLEController camera;
 bool doConnect = false;
 NimBLEAdvertisedDevice* foundDevice = nullptr;
 
-class MyAdvertisedDeviceCallbacks : public NimBLE::NimBLEAdvertisedDeviceCallbacks {
-    void onResult(NimBLEAdvertisedDevice* advertisedDevice) override { // Corrected
+class MyAdvertisedDeviceCallbacks : public NimBLEAdvertisedDeviceCallbacks {
+    void onResult(NimBLEAdvertisedDevice* advertisedDevice) override {
         Serial.printf("Advertised Device Found: %s\n", advertisedDevice->toString().c_str());
 
         if (advertisedDevice->haveServiceUUID() && advertisedDevice->isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
@@ -60,18 +60,19 @@ void setup() {
     pBLEScan->setActiveScan(true);
     pBLEScan->setInterval(100);
     pBLEScan->setWindow(99);
-    pBLEScan->start(5, new MyAdvertisedDeviceCallbacks(), false); // Scan for 5 seconds, non-blocking.
+    pBLEScan->start(0, new MyAdvertisedDeviceCallbacks()); // Scan forever, non-blocking.
 }
 
 void loop() {
     if (doConnect) {
-        doConnect = false;
+        doConnect = false;  // Reset this immediately
         if (camera.connectToCamera(foundDevice)) {
-            Serial.println("Connection successful!");
+            Serial.println("Connect successful");
             delay(2000);
             camera.setAperture(5.6f); // Example command
         } else {
-            Serial.println("Connection failed.");
+            Serial.println("Failed to connect to camera");
+            //  Optionally restart scan here if connection fails.
         }
     }
     delay(10);
