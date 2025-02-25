@@ -1,7 +1,54 @@
 #include "BMDBLEController.h"
 
-// Static member initialization (required for the callbacks)
 BMDBLEController* BMDBLEController::_instance = nullptr;
+
+// Custom BLESecurityCallbacks class
+class MySecurityCallbacks : public BLESecurityCallbacks {
+
+    uint32_t onPassKeyRequest() override {
+        Serial.println("PassKeyRequest");
+        return 0; // We won't actually use this, as we use Notify
+    }
+
+    void onPassKeyNotify(uint32_t pass_key) override {
+        Serial.print("The passkey Notify is: ");
+        Serial.println(pass_key);
+        // Here, you would display `pass_key` to the user and get their input.
+        // For this example, we're just printing it.  You MUST replace this
+        // with your actual input method (Serial, display, etc.).
+    }
+
+
+    bool onSecurityRequest() override {
+        Serial.println("SecurityRequest");
+        return true;
+    }
+
+    void onAuthenticationComplete(esp_ble_auth_cmpl_t auth_cmpl) override {
+        if (auth_cmpl.success) {
+            Serial.println("BLE Pairing Success!");
+            if (_instance) {
+                _instance->_bonded = true; // Set bonded status here
+            }
+        } else {
+            Serial.print("BLE Pairing Failed! Reason: ");
+            Serial.println(auth_cmpl.fail_reason);
+            // You might want to disconnect here and try again.
+            if (_instance) {
+              _instance->disconnect();
+            }
+        }
+    }
+
+     bool onConfirmPIN(uint32_t pin) {
+        Serial.print("ConfirmPin: ");
+        Serial.println(pin);
+
+        return false; // Always return false.  We use Notify.
+    }
+
+};
+
 
 BMDBLEController::BMDBLEController() :
   _pClient(nullptr),
@@ -22,15 +69,16 @@ bool BMDBLEController::begin() {
   BLEDevice::init(""); // Initialize the BLE device
 
   // Setup BLE security for bonding.  This MUST be done before connecting.
-  _pSecurity = new BLESecurity();
+  _pSecurity = new BLESecurity(); // Create the object.
   _pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND); // Secure Connections, MITM protection, Bonding
-  _pSecurity->setCapability(ESP_IO_CAP_IN); // ESP32 can *receive* input (the PIN code)
+  _pSecurity->setCapability(ESP_IO_CAP_INPUT); // ESP32 can *receive* input (the PIN code)
   _pSecurity->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK); // Request encryption and identity keys
 
   // Set the static callbacks
-  BLEDevice::setSecurityCallbacks(new BLESecurityCallbacks()); // Use default callbacks, but...
-  BLEDevice::setCustomPasskeyCB(_passkeyNotifyCallback);        // ...override passkey notification
-  BLEDevice::setAuthCompleteCB(_authCompleteCallback);           // ...and authentication completion
+  //BLEDevice::setSecurityCallbacks(new BLESecurityCallbacks()); // Use default callbacks, but...
+  BLEDevice::setSecurityCallbacks(new MySecurityCallbacks()); // Use our custom callback class
+  //BLEDevice::setCustomPasskeyCB(_passkeyNotifyCallback);        // ...override passkey notification  -- REMOVED
+  //BLEDevice::setAuthCompleteCB(_authCompleteCallback);           // ...and authentication completion -- REMOVED
 
   return true; // Indicate successful initialization
 }
@@ -201,43 +249,6 @@ void BMDBLEController::_statusNotifyCallback(BLERemoteCharacteristic* pBLERemote
             _instance->_statusCallback(status);
         }
     }
-}
-
-// Static callback for authentication complete
-void BMDBLEController::_authCompleteCallback(esp_ble_auth_cmpl_t* auth_cmpl) {
-    if (auth_cmpl->success) {
-        Serial.println("BLE Pairing Success!");
-        if (_instance) {
-            _instance->_bonded = true; // Set bonded status here
-        }
-    } else {
-        Serial.print("BLE Pairing Failed! Reason: ");
-        Serial.println(auth_cmpl->fail_reason);
-        // You might want to disconnect here and try again.
-        if (_instance) {
-          _instance->disconnect();
-        }
-    }
-}
-
-// Static callback for passkey notification
-uint32_t BMDBLEController::_passkeyNotifyCallback(uint32_t passkey) {
-    Serial.print("BLE Passkey: ");
-    Serial.println(passkey);
-    // IMPORTANT: Here, you MUST display the passkey to the user
-    // (e.g., on a display, via Serial Monitor) and get their input.
-    // For this basic example, we'll assume the user enters the
-    // passkey via Serial Monitor.  In a real application, you'd
-    // use a more user-friendly input method.
-    Serial.println("Enter the passkey shown on the camera and press Enter:");
-    while (Serial.available() == 0) {
-      delay(100); // Wait for input
-    }
-    String input = Serial.readStringUntil('\n');
-    input.trim();
-    uint32_t enteredPasskey = input.toInt();
-
-    return enteredPasskey;
 }
 
 // Helper function to convert float to 5.11 fixed-point
