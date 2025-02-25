@@ -2,7 +2,7 @@
 #define BMDBLECONTROLLER_H
 
 #include <Arduino.h>
-#include <NimBLEDevice.h> // Use NimBLE library
+#include <NimBLEDevice.h>
 
 // Blackmagic Camera Service and Characteristic UUIDs (from the documentation)
 #define BLACKMAGIC_CAMERA_SERVICE_UUID  "291d567a-6d75-11e6-8b77-86f30ca893d3"
@@ -15,7 +15,7 @@ public:
   // Constructor
   BMDBLEController();
 
-  // Initialize BLE and set up scanning (but don't start scanning here)
+  // Initialize BLE
   bool begin();
 
   // Connect to a discovered Blackmagic camera
@@ -36,23 +36,18 @@ public:
   // Send a command using individual parameters - Higher-level, easier to use
   bool sendCommand(uint8_t destination, uint8_t commandId, uint8_t category, uint8_t parameter, uint8_t dataType, uint8_t operationType, uint8_t* data, size_t dataLength);
 
-  // --- Example Convenience Functions (Add more for other commands) ---
-
-  // Lens Control
+  // --- Example Convenience Functions ---
   bool setAperture(float fStop);
   bool autoFocus();
-
-  // Video Control
   bool setISO(int iso);
   bool setWhiteBalance(int kelvin, int tint);
-  bool setShutterAngle(float angle); // in degrees
-  bool setNDFilter(float stop); // e.g., 0.0, 0.6, 1.2, 1.8, 2.4
-  bool autoExposure(uint8_t mode); // 0=Off, 1=Iris, 2=Shutter, 3=Iris+Shutter, 4=Shutter+Iris
-
-  //Media Control
+  bool setShutterAngle(float angle);
+  bool setNDFilter(float stop);
+  bool autoExposure(uint8_t mode);
   bool setRecordingFormat(uint8_t fileFrameRate, uint8_t sensorFrameRate, uint16_t frameWidth, uint16_t frameHeight, uint8_t flags);
-  bool setTransportMode(uint8_t mode, int8_t speed); //mode: 0=Preview, 1=Play, 2=Record
-  bool setCodec(uint8_t basicCodec, uint8_t codeVariant); //basicCodec: 0=RAW, 1=DNxHD, 2=ProRes, 3=Blackmagic RAW
+  bool setTransportMode(uint8_t mode, int8_t speed);
+  bool setCodec(uint8_t basicCodec, uint8_t codeVariant);
+
 
   // Callback function types (for user implementation)
   typedef void (*IncomingDataCallback)(uint8_t* data, size_t length);
@@ -62,31 +57,28 @@ public:
   void setIncomingDataCallback(IncomingDataCallback callback);
   void setStatusCallback(StatusCallback callback);
 
-
 private:
-    NimBLEClient* _pClient;
-    NimBLERemoteCharacteristic* _pOutgoingCharacteristic;
-    NimBLERemoteCharacteristic* _pIncomingCharacteristic;
-    NimBLERemoteCharacteristic* _pStatusCharacteristic;
-    bool _connected;
-    bool _bonded;
-    bool _callbacksSet; // Flag to track if callbacks have been registered
+  NimBLEClient* _pClient = nullptr;  // Use NimBLEClient
+  NimBLERemoteCharacteristic* _pOutgoingCharacteristic = nullptr;
+  NimBLERemoteCharacteristic* _pIncomingCharacteristic = nullptr;
+  NimBLERemoteCharacteristic* _pStatusCharacteristic = nullptr;
+  bool _connected = false;
+  bool _bonded = false;
+  bool _callbacksSet = false;
 
-    IncomingDataCallback _incomingDataCallback; // Pointer to user's data callback
-    StatusCallback _statusCallback;             // Pointer to user's status callback
+  IncomingDataCallback _incomingDataCallback = nullptr;
+  StatusCallback _statusCallback = nullptr;
 
-    // Static callback functions (required by NimBLE library)
-    static void _incomingDataNotifyCallback(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
-    static void _statusNotifyCallback(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
-    // Add static callback for on connect
-    static void _onConnectCallback(NimBLEClient* pClient);
-    // Add static callback for numeric comparison
-    static void _onConfirmPIN(uint32_t pin);
+  // Static callback functions (required by NimBLE library)
+  static void _incomingDataNotifyCallback(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+  static void _statusNotifyCallback(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+  static void _onConnectCallback(NimBLEClient* pClient); // Corrected callback
+  static void _onConfirmPIN(uint32_t pin);           // Corrected callback
 
-    // Helper function for fixed-point conversion
-    uint16_t _floatToFixed16(float value);
-    static BMDBLEController* _instance; //for static callback to work.
-    uint32_t _passkey = 0; // To store the passkey
+  // Helper function for fixed-point conversion
+  uint16_t _floatToFixed16(float value);
+  static BMDBLEController* _instance; // Make sure we have a static instance
+  uint32_t _passkey = 0;  // To store passkey
 };
 
 #endif
