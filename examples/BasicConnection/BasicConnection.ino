@@ -4,7 +4,7 @@
 // Use the Blackmagic Camera Service UUID for reliable identification.
 #define SERVICE_UUID "291d567a-6d75-11e6-8b77-86f30ca893d3"
 
-BMDBLEController camera;
+BMDBLEController camera; // Use the new class name
 bool doConnect = false;
 NimBLEAdvertisedDevice* foundDevice = nullptr; // Store a *pointer*, not a copy
 
@@ -13,7 +13,7 @@ class MyAdvertisedDeviceCallbacks : public NimBLEAdvertisedDeviceCallbacks { // 
     void onResult(NimBLEAdvertisedDevice* advertisedDevice) { // Use pointer
         Serial.printf("Advertised Device: %s \n", advertisedDevice->toString().c_str());
 
-        // Check for the Blackmagic Camera Service UUID.
+        // Check for the Blackmagic Camera Service UUID.  This is more reliable than the name.
         if (advertisedDevice->haveServiceUUID() && advertisedDevice->isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
             Serial.println("Found Blackmagic Camera!");
             NimBLEDevice::getScan()->stop(); // Stop scanning
@@ -65,11 +65,11 @@ void setup() {
     camera.setStatusCallback(statusCallback); // Set status callback
 
     NimBLEScan* pBLEScan = NimBLEDevice::getScan(); // Get the scan object
-    //pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks()); // NO - set in start()
+    // pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks()); // NO - set in start()
     pBLEScan->setActiveScan(true); // Active scan uses more power, but gets results faster
     pBLEScan->setInterval(100);
     pBLEScan->setWindow(99);  // Must be less or equal than interval
-    pBLEScan->start(5, new MyAdvertisedDeviceCallbacks(), false); // Start scanning (non-blocking), set callback here.
+     pBLEScan->start(5, new MyAdvertisedDeviceCallbacks(), false); // Start scanning (non-blocking), set callback here.
 
 }
 
