@@ -82,9 +82,16 @@ private:
   IncomingDataCallback _incomingDataCallback; // Pointer to user's data callback
   StatusCallback _statusCallback;             // Pointer to user's status callback
 
+    // Security object for bonding
+  BLESecurity* _pSecurity;
+
   // Static callback functions (required by ESP32 BLE library)
   static void _incomingDataNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
   static void _statusNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+    // Add static callback for authentication complete
+  static void _authCompleteCallback(esp_ble_auth_cmpl_t* auth_cmpl);
+    // Add static callback for passkey notification
+  static uint32_t _passkeyNotifyCallback(uint32_t passkey);
 
   // Helper function for fixed-point conversion
   uint16_t _floatToFixed16(float value);
