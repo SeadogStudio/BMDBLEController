@@ -9,11 +9,11 @@ bool doConnect = false;
 NimBLEAdvertisedDevice* foundDevice = nullptr; // Store a *pointer*, not a copy
 
 // Callback for when a BLE device is found.
-class MyAdvertisedDeviceCallbacks : public NimBLEAdvertisedDeviceCallbacks {
+class MyAdvertisedDeviceCallbacks : public NimBLE::NimBLEAdvertisedDeviceCallbacks { // Corrected: Use NimBLE:: namespace
     void onResult(NimBLEAdvertisedDevice* advertisedDevice) override { // Corrected: Add override
         Serial.printf("Advertised Device: %s \n", advertisedDevice->toString().c_str());
 
-        // Check for the Blackmagic Camera Service UUID.
+        // Check for the Blackmagic Camera Service UUID.  This is more reliable than the name.
         if (advertisedDevice->haveServiceUUID() && advertisedDevice->isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
             Serial.println("Found Blackmagic Camera!");
             NimBLEDevice::getScan()->stop(); // Stop scanning
