@@ -2,54 +2,6 @@
 
 BMDBLEController* BMDBLEController::_instance = nullptr;
 
-// Custom BLESecurityCallbacks class
-class MySecurityCallbacks : public BLESecurityCallbacks {
-
-    uint32_t onPassKeyRequest() override {
-        Serial.println("PassKeyRequest");
-        return 0; // We won't actually use this, as we use Notify
-    }
-
-    void onPassKeyNotify(uint32_t pass_key) override {
-        Serial.print("The passkey Notify is: ");
-        Serial.println(pass_key);
-        // Here, you would display `pass_key` to the user and get their input.
-        // For this example, we're just printing it.  You MUST replace this
-        // with your actual input method (Serial, display, etc.).
-    }
-
-
-    bool onSecurityRequest() override {
-        Serial.println("SecurityRequest");
-        return true;
-    }
-
-    void onAuthenticationComplete(esp_ble_auth_cmpl_t auth_cmpl) override {
-        if (auth_cmpl.success) {
-            Serial.println("BLE Pairing Success!");
-            if (_instance) {
-                _instance->_bonded = true; // Set bonded status here
-            }
-        } else {
-            Serial.print("BLE Pairing Failed! Reason: ");
-            Serial.println(auth_cmpl.fail_reason);
-            // You might want to disconnect here and try again.
-            if (_instance) {
-              _instance->disconnect();
-            }
-        }
-    }
-
-     bool onConfirmPIN(uint32_t pin) {
-        Serial.print("ConfirmPin: ");
-        Serial.println(pin);
-
-        return false; // Always return false.  We use Notify.
-    }
-
-};
-
-
 BMDBLEController::BMDBLEController() :
   _pClient(nullptr),
   _pOutgoingCharacteristic(nullptr),
@@ -60,45 +12,66 @@ BMDBLEController::BMDBLEController() :
   _callbacksSet(false),
   _incomingDataCallback(nullptr),
   _statusCallback(nullptr),
-  _pSecurity(nullptr) // Initialize _pSecurity
+  _passkey(0)
 {
     _instance = this; // Set the static instance pointer
 }
 
 bool BMDBLEController::begin() {
-  BLEDevice::init(""); // Initialize the BLE device
+    NimBLEDevice::init(""); // Initialize NimBLE
+    NimBLEDevice::setSecurityAuth(true, true, true); // Enable bonding, MITM.  CRUCIAL for persistence.
+    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_KEYBOARD_ONLY); //For using with a keyboard for testing.
+    //NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT); // Use for Just Works (no PIN)
+    return true;
+}
 
-  // Setup BLE security for bonding.  This MUST be done before connecting.
-  _pSecurity = new BLESecurity(); // Create the object.
-  _pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND); // Secure Connections, MITM protection, Bonding
-  _pSecurity->setCapability(ESP_IO_CAP_INPUT); // ESP32 can *receive* input (the PIN code)
-  _pSecurity->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK); // Request encryption and identity keys
+// Static callback function for connection events
+void BMDBLEController::_onConnectCallback(NimBLEClient* pClient) {
+    Serial.println("Connected to camera");
+    if (_instance) {
+        _instance->_connected = true;
+        // Check if we are bonded after connecting
+        if (pClient->getPeerInfo().isBonded()) {
+            Serial.println("Already bonded!");
+            _instance->_bonded = true;
+        }
+    }
+}
 
-  // Set the static callbacks
-  //BLEDevice::setSecurityCallbacks(new BLESecurityCallbacks()); // Use default callbacks, but...
-  BLEDevice::setSecurityCallbacks(new MySecurityCallbacks()); // Use our custom callback class
-  //BLEDevice::setCustomPasskeyCB(_passkeyNotifyCallback);        // ...override passkey notification  -- REMOVED
-  //BLEDevice::setAuthCompleteCB(_authCompleteCallback);           // ...and authentication completion -- REMOVED
-
-  return true; // Indicate successful initialization
+// Static callback for numeric comparison (bonding)
+void BMDBLEController::_onConfirmPIN(uint32_t pin) {
+    Serial.print("Confirm or enter passkey: ");
+    Serial.println(pin);
+    _instance->_passkey = pin; // Store the passkey
+    NimBLEDevice::confirmReply(true); // Always confirm for this example.  Replace with user input.
 }
 
 
-bool BMDBLEController::connectToCamera(BLEAdvertisedDevice* device) {
+bool BMDBLEController::connectToCamera(NimBLEAdvertisedDevice* device) {
     if (_connected) {
         return false; // Already connected, prevent multiple connections
     }
 
-    _pClient = BLEDevice::createClient();
+    _pClient = NimBLEDevice::createClient();
     if (!_pClient) {
         return false; // Failed to create client
     }
+
+    // Set connection parameters - this can improve connection reliability
+    _pClient->setConnectTimeout(10); // Set connection timeout to 10 seconds (default is 30)
+    _pClient->setConnectionParams(12,12,0,51); //15ms, 15ms, 0, 5.1 seconds
+
+    // Set the connect callback
+    _pClient->setClientCallbacks(new NimBLEClientCallbacks()); //use a default callback handler
+    _pClient->setConnectCallback(_onConnectCallback); // Set our custom connect callback
+
 
     if (!_pClient->connect(device)) {
         return false; // Failed to connect
     }
 
-    BLERemoteService* pRemoteService = _pClient->getService(BLACKMAGIC_CAMERA_SERVICE_UUID);
+
+    NimBLERemoteService* pRemoteService = _pClient->getService(BLACKMAGIC_CAMERA_SERVICE_UUID);
     if (pRemoteService == nullptr) {
         _pClient->disconnect();
         return false; // Service not found
@@ -113,29 +86,24 @@ bool BMDBLEController::connectToCamera(BLEAdvertisedDevice* device) {
         return false; // One or more characteristics not found
     }
 
-    // Set callbacks if they are defined.  Crucially, do this *before* registering for notifications.
+     // Set callbacks if they are defined.  Crucially, do this *before* registering for notifications.
     if (_incomingDataCallback) {
-        _pIncomingCharacteristic->registerForNotify(_incomingDataNotifyCallback);
+        _pIncomingCharacteristic->subscribe(true, _incomingDataNotifyCallback, true); // Use subscribe() with NimBLE
     }
     if (_statusCallback) {
-        _pStatusCharacteristic->registerForNotify(_statusNotifyCallback);
+        _pStatusCharacteristic->subscribe(true, _statusNotifyCallback, true); // Use subscribe()
     }
     _callbacksSet = true; // Set the flag to indicate callbacks are registered
 
-
-    // Initiate bonding.  The simplest way to do this is to write to the status characteristic.  A value of 0x01 powers on the camera and
-    // starts the bonding process.
-    uint8_t powerOn = 0x01;
-    _pStatusCharacteristic->writeValue(&powerOn, 1, false); // Write without response
-
+    // Don't initiate bonding manually. NimBLE handles it.
     _connected = true; // Set connection status
     return true; // Connection successful (so far)
 }
 
 
 void BMDBLEController::disconnect() {
-  if (_connected) {
-    //Deregister is not needed.
+  if (_connected && _pClient) {
+    //NimBLE handles disconnect and unregistering
     _pClient->disconnect();
     _connected = false;
     _bonded = false; // Reset bonded status on disconnect
@@ -206,7 +174,7 @@ bool BMDBLEController::sendCommand(uint8_t destination, uint8_t commandId, uint8
     }
 
     // Send the command
-    //bool result = _pOutgoingCharacteristic->writeValue(commandPacket, paddedLength, false); //Corrected: return type is void
+    //bool result = _pOutgoingCharacteristic->writeValue(commandPacket, paddedLength, false); //Corrected return type is void.
      _pOutgoingCharacteristic->writeValue(commandPacket, paddedLength, false);
     // Clean up
     delete[] commandPacket;
@@ -218,37 +186,45 @@ bool BMDBLEController::sendCommand(uint8_t destination, uint8_t commandId, uint8
 
 void BMDBLEController::setIncomingDataCallback(IncomingDataCallback callback) {
     _incomingDataCallback = callback;
-    // If already connected and callbacks are not yet set, set them now.
+     // If already connected and callbacks are not yet set, set them now.
     if(_connected && !_callbacksSet && _pIncomingCharacteristic){
-        _pIncomingCharacteristic->registerForNotify(_incomingDataNotifyCallback);
+        _pIncomingCharacteristic->subscribe(true, _incomingDataNotifyCallback, true); // Use subscribe()
     }
 }
 
 void BMDBLEController::setStatusCallback(StatusCallback callback) {
     _statusCallback = callback;
     if(_connected && !_callbacksSet && _pStatusCharacteristic){
-        _pStatusCharacteristic->registerForNotify(_statusNotifyCallback);
+        _pStatusCharacteristic->subscribe(true, _statusNotifyCallback, true); // Use subscribe()
     }
 }
 
-// Static callback function for incoming data notifications
-void BMDBLEController::_incomingDataNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
+// Static callback function for incoming data notifications (NimBLE version)
+void BMDBLEController::_incomingDataNotifyCallback(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
     // Call the user-provided callback (if set) using the instance pointer
     if (_instance && _instance->_incomingDataCallback) {
         _instance->_incomingDataCallback(pData, length);
     }
 }
 
-// Static callback function for status notifications
-void BMDBLEController::_statusNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
+// Static callback function for status notifications (NimBLE version)
+void BMDBLEController::_statusNotifyCallback(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
     // Call the user-provided callback (if set) using the instance pointer
     if (_instance && _instance->_statusCallback) {
         if(length > 0){
             uint8_t status = pData[0];
-            // Don't set _bonded here.  Wait for the auth complete callback.
+            // Don't set _bonded here.  Wait for the onConnect callback.
             _instance->_statusCallback(status);
         }
     }
+}
+
+// Static callback for numeric comparison (bonding)
+void BMDBLEController::_onConfirmPIN(uint32_t pin) {
+    Serial.print("Confirm or enter passkey: ");
+    Serial.println(pin);
+    _instance->_passkey = pin; // Store the passkey
+    NimBLEDevice::confirmReply(true); // Always confirm for this example.  Replace with user input.
 }
 
 // Helper function to convert float to 5.11 fixed-point
