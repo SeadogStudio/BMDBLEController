@@ -1,29 +1,26 @@
 #include <BMDBLEController.h>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
+#include <NimBLEDevice.h> // Use NimBLE
 
 // Replace with your camera's advertised name if you know it, otherwise use service UUID filtering.
 // Using the name is generally NOT recommended for production, as it's not unique.
 // #define CAMERA_NAME "Blackmagic Camera" // Example name.  This is NOT reliable.
-#define SERVICE_UUID "291d567a-6d75-11e6-8b77-86f30ca893d3" // Blackmagic Camera Service
+#define SERVICE_UUID "291d567a-6d75-11e6-8b77-86f30ca893d3" //Blackmagic Camera Service
 
-BMDBLEController camera;
+BMDBLEController camera; // Use the new class name
 bool doConnect = false;
-BLEAdvertisedDevice* foundDevice;
+NimBLEAdvertisedDevice* foundDevice; // Use NimBLEAdvertisedDevice
 
 // Callback for when a BLE device is found.
-class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
-    void onResult(BLEAdvertisedDevice advertisedDevice) {
-        Serial.printf("Advertised Device: %s \n", advertisedDevice.toString().c_str());
+class MyAdvertisedDeviceCallbacks : public NimBLEAdvertisedDeviceCallbacks {
+    void onResult(NimBLEAdvertisedDevice* advertisedDevice) { // Use pointer
+        Serial.printf("Advertised Device: %s \n", advertisedDevice->toString().c_str());
 
         // Check for the Blackmagic Camera Service UUID.  This is more reliable than the name.
-        if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(BLEUUID(SERVICE_UUID))) {
+        if (advertisedDevice->haveServiceUUID() && advertisedDevice->isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
             Serial.println("Found Blackmagic Camera!");
-            BLEDevice::getScan()->stop(); // Stop scanning once we find the camera
-            foundDevice = new BLEAdvertisedDevice(advertisedDevice); // Store the device
-            doConnect = true;  // Set the flag to connect in the loop()
+            NimBLEDevice::getScan()->stop(); // Stop scanning once we find the camera
+            foundDevice = advertisedDevice;    // Store the device pointer directly
+            doConnect = true;                // Set the flag to connect in the loop()
         }
     }
 };
@@ -50,9 +47,7 @@ void statusCallback(uint8_t status) {
     if (status & 0x02) {
         Serial.println("Camera is Connected");
     }
-    if (status & 0x04) {
-        Serial.println("Camera is Paired/Bonded");
-    }
+    // Don't check for 0x04 (paired) here.  Check _bonded in the BMDBLEController.
     if (status & 0x08) {
         Serial.println("Versions Verified");
     }
@@ -72,29 +67,36 @@ void setup() {
     camera.setIncomingDataCallback(incomingDataCallback); // Set the data callback
     camera.setStatusCallback(statusCallback); // Set the status callback
 
-    BLEScan* pBLEScan = BLEDevice::getScan(); // Get the BLEScan object
+    NimBLEScan* pBLEScan = NimBLEDevice::getScan(); // Get the BLEScan object (NimBLE)
     pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks()); // Set the device discovery callback
     pBLEScan->setActiveScan(true); // Active scan uses more power, but gets results faster
     pBLEScan->setInterval(100); // Set scan interval to 100ms
     pBLEScan->setWindow(99);  // Must be less or equal than interval
-    pBLEScan->start(5, false); // Start scanning for 5 seconds (non-blocking)
+     pBLEScan->start(5, false); // Start scanning for 5 seconds (non-blocking)
+
 }
 
 void loop() {
     if (doConnect) { // If a device was found
         if (camera.connectToCamera(foundDevice)) {
-            Serial.println("Connected to camera");
+            Serial.println("Connect successful");
         } else {
             Serial.println("Failed to connect to camera");
         }
         doConnect = false; // Reset the connection flag
-        delete foundDevice;  // crucial, to prevent memory leaks.
-        foundDevice = nullptr;
+        // Don't delete foundDevice here; NimBLE manages it.
     }
 
-    // You could add other logic here, such as sending commands after a delay,
-    // or responding to button presses.  For this *basic* example, we just
-    // connect and monitor the status.
+    if (camera.isConnected()) {
+        // Example:  Send a command after a delay (e.g., set aperture)
+        // You can add more commands here, or trigger them based on
+        // other events (button presses, sensor readings, etc.).
+        delay(2000); // Wait 2 seconds after connecting
+        if (!camera.setAperture(5.6f)) { // Example: Set aperture to f/5.6
+            Serial.println("Failed to set aperture");
+        }
+        camera.disconnect();
+    }
 
     delay(10); // Don't flood the serial port or the BLE connection.
 }
