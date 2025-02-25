@@ -10,7 +10,7 @@ NimBLEAdvertisedDevice* foundDevice = nullptr; // Store a *pointer*, not a copy
 
 // Callback for when a BLE device is found.
 class MyAdvertisedDeviceCallbacks : public NimBLEAdvertisedDeviceCallbacks { // Correct inheritance
-    void onResult(NimBLEAdvertisedDevice* advertisedDevice) { // Use pointer
+    void onResult(NimBLEAdvertisedDevice* advertisedDevice) override { // Use pointer and override
         Serial.printf("Advertised Device: %s \n", advertisedDevice->toString().c_str());
 
         // Check for the Blackmagic Camera Service UUID.  This is more reliable than the name.
