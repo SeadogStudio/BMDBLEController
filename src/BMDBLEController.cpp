@@ -4,7 +4,7 @@
 BMDBLEController* BMDBLEController::_instance = nullptr;
 
 // Advertised device callbacks class
-class BMDAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
+class BMDSecurityCallbacks: public BLESecurityCallbacks {
 private:
   BMDBLEController* _controller;
   
