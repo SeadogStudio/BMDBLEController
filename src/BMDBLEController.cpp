@@ -1,367 +1,984 @@
 #include "BMDBLEController.h"
 
-// Static member initialization (no longer needed with separate callback class)
-// BMDBLEController* BMDBLEController::_instance = nullptr;
-
-// Custom callback class for NimBLE client events
-class ClientCallbacks : public NimBLEClientCallbacks {
-    void onConnect(NimBLEClient* pClient) override {
-        Serial.println("Connected");
-        // After connecting, a new connection ID is assigned, so we should re-subscribe.
-        BMDBLEController* pController = (BMDBLEController*)pClient->getUserData(); // Get the BMDBLEController instance
-        if (pController) {
-            pController->_connected = true;
-             // Check for bonding *after* connection is established.
-            if (pClient->getPeerInfo().isBonded()) {
-                Serial.println("Already bonded!");
-                pController->_bonded = true;
-            }
-
-            if(pController->_callbacksSet) {
-                if (pController->_pIncomingCharacteristic) {
-                    pController->_pIncomingCharacteristic->subscribe(true, BMDBLEController::_incomingDataNotifyCallback, true);
-                }
-                if (pController->_pStatusCharacteristic) {
-                    pController->_pStatusCharacteristic->subscribe(true, BMDBLEController::_statusNotifyCallback, true);
-                }
-            }
-        }
-    }
-
-    void onDisconnect(NimBLEClient* pClient) override {
-        Serial.print("Disconnected - code: ");
-        Serial.println(pClient->getDisconnectReason());
-        BMDBLEController* pController = (BMDBLEController*)pClient->getUserData();
-        if (pController) {
-            pController->_connected = false;
-            pController->_bonded = false;
-        }
-    }
-
-    // Called when security requests are initiated or completed.
-    uint32_t onPassKeyRequest() override{
-        Serial.println("Client Passkey Request");
-        return 123456;
-    }
-
-    bool onConfirmPIN(uint32_t pass_key) override{
-        Serial.print("Confirm or reject passkey: ");
-        Serial.println(pass_key);
-        //  Here, you would get input from the user (e.g., buttons, keypad)
-        //  to confirm if the passkey matches what's displayed on the camera.
-        //  For this example, we'll auto-confirm.  Replace this with your
-        //  actual input handling.
-        return true;  // true indicates the passkey is correct.
-    }
-
-    void onAuthenticationComplete(ble_gap_conn_desc* desc) override{
-        if(desc->sec_state.encrypted) {
-            Serial.println("Encrypt connection complete - bonded");
-        } else {
-            Serial.println("Encrypt connection failed - not bonded");
-        }
-    }
-};
-
-
-BMDBLEController::BMDBLEController() :
-  _pClient(nullptr),
-  _pOutgoingCharacteristic(nullptr),
-  _pIncomingCharacteristic(nullptr),
-  _pStatusCharacteristic(nullptr),
-  _connected(false),
-  _bonded(false),
-  _callbacksSet(false),
-  _incomingDataCallback(nullptr),
-  _statusCallback(nullptr)
-{
-    //_instance = this; // No longer needed
+// Constructor
+BMDBLEController::BMDBLEController(String deviceName) {
+  _deviceName = deviceName;
+  _connected = false;
+  _deviceFound = false;
+  _scanInProgress = false;
+  _autoReconnect = true;
+  _displayInitialized = false;
+  _recordingState = false;
+  _lastReconnectAttempt = 0;
+  _currentDisplayMode = BMD_DISPLAY_BASIC;
+  _paramCount = 0;
+  _pClient = nullptr;
+  _pServerAddress = nullptr;
+  _pDisplay = nullptr;
+  _responseCallback = nullptr;
 }
 
-bool BMDBLEController::begin() {
-  NimBLEDevice::init(""); // Initialize NimBLE
-  NimBLEDevice::setSecurityAuth(true, true, true); // Enable bonding, MITM.  CRUCIAL for persistence.
-  NimBLEDevice::setSecurityIOCap(BLE_HS_IO_KEYBOARD_DISPLAY); // ESP32 can input and display
-  return true;
-}
-
-bool BMDBLEController::connectToCamera(NimBLEAdvertisedDevice* device) {
-    if (_connected) {
-        return false; // Already connected, prevent multiple connections
-    }
-
-    // Check if we already have a client object for this device
-    _pClient = NimBLEDevice::getDisconnectedClient();
-    if(!_pClient){
-        _pClient = NimBLEDevice::createClient();
-    }
-
-    if (!_pClient) {
-        return false; // Failed to create client
-    }
-
-    // Set connection parameters - this can improve connection reliability
-    _pClient->setConnectTimeout(10); // Set connection timeout to 10 seconds (default is 30)
-    _pClient->setConnectionParams(12,12,0,51); //15ms, 15ms, 0, 5.1 seconds
-
-    // Set the connect callback using our custom class
-    _pClient->setClientCallbacks(new ClientCallbacks());
-    _pClient->setUserData(this); //VERY IMPORTANT
-
-    if (!_pClient->connect(device, false)) { // Connect, don't scan again if we fail.
-        NimBLEDevice::deleteClient(_pClient); // Clean up the client if connection fails.
-        _pClient = nullptr;
-        return false; // Failed to connect
-    }
-
-    NimBLERemoteService* pRemoteService = _pClient->getService(BLACKMAGIC_CAMERA_SERVICE_UUID);
-    if (pRemoteService == nullptr) {
-        _pClient->disconnect();
-        return false; // Service not found
-    }
-
-    _pOutgoingCharacteristic = pRemoteService->getCharacteristic(OUTGOING_CHARACTERISTIC_UUID);
-    _pIncomingCharacteristic = pRemoteService->getCharacteristic(INCOMING_CHARACTERISTIC_UUID);
-    _pStatusCharacteristic = pRemoteService->getCharacteristic(CAMERA_STATUS_CHARACTERISTIC_UUID);
-
-    if (!_pOutgoingCharacteristic || !_pIncomingCharacteristic || !_pStatusCharacteristic) {
-        _pClient->disconnect();
-        return false; // One or more characteristics not found
-    }
-
-     // Set callbacks if they are defined.  Crucially, do this *before* registering for notifications.
-    if (_incomingDataCallback) {
-        _pIncomingCharacteristic->subscribe(true, _incomingDataNotifyCallback, true); // Use subscribe() with NimBLE
-    }
-    if (_statusCallback) {
-        _pStatusCharacteristic->subscribe(true, _statusNotifyCallback, true); // Use subscribe()
-    }
-    _callbacksSet = true; // Set the flag to indicate callbacks are registered
-    return true;
-}
-
-
-void BMDBLEController::disconnect() {
-  if (_connected && _pClient) {
-        if(_pClient->isConnected()){
-            _pClient->disconnect();
-        }
-        NimBLEDevice::deleteClient(_pClient);  // VERY IMPORTANT: Release resources
-        _pClient = nullptr;
-        _connected = false;
-        _bonded = false;
-        _callbacksSet = false;
+// Initialize library
+void BMDBLEController::begin() {
+  Serial.println("Initializing BMDBLEController...");
+  
+  // Initialize BLE
+  BLEDevice::init(_deviceName.c_str());
+  BLEDevice::setPower(ESP_PWR_LVL_P9); // Maximum power
+  
+  // Create BLE callback instances
+  _pAdvertisedDeviceCallbacks = new BMDAdvertisedDeviceCallbacks(this);
+  _pSecurityCallbacks = new BMDSecurityCallbacks(this);
+  
+  // Set up security
+  BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
+  BLEDevice::setSecurityCallbacks(_pSecurityCallbacks);
+  
+  // Check for saved camera connection
+  preferences.begin("bmdcamera", false);
+  bool authenticated = preferences.getBool("authenticated", false);
+  String savedAddress = preferences.getString("address", "");
+  preferences.end();
+  
+  if (authenticated && savedAddress.length() > 0) {
+    Serial.println("Found saved camera connection: " + savedAddress);
+    _pServerAddress = new BLEAddress(savedAddress.c_str());
+    _deviceFound = true;
   }
 }
 
+// Initialize with OLED display
+void BMDBLEController::begin(Adafruit_SSD1306* display) {
+  begin();
+  _pDisplay = display;
+  _displayInitialized = true;
+  
+  // Initial display update
+  updateDisplay();
+}
+
+// Scan for Blackmagic cameras
+bool BMDBLEController::scan(uint32_t duration) {
+  if (_scanInProgress) {
+    return false;
+  }
+  
+  Serial.println("Scanning for Blackmagic camera...");
+  _scanInProgress = true;
+  _deviceFound = false;
+  
+  if (_displayInitialized) {
+    _pDisplay->clearDisplay();
+    _pDisplay->setTextSize(1);
+    _pDisplay->setCursor(0, 0);
+    _pDisplay->println("BMDBLEController");
+    _pDisplay->println("Scanning...");
+    _pDisplay->display();
+  }
+  
+  // Disconnect if connected
+  if (_connected && _pClient) {
+    _pClient->disconnect();
+    _connected = false;
+  }
+  
+  // Start scan
+  BLEScan* pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(_pAdvertisedDeviceCallbacks);
+  pBLEScan->setActiveScan(true);
+  pBLEScan->start(duration);
+  
+  return true;
+}
+
+// Connect to camera
+bool BMDBLEController::connect() {
+  if (!_deviceFound || _connected) {
+    return false;
+  }
+  
+  Serial.print("Connecting to camera at address: ");
+  Serial.println(_pServerAddress->toString().c_str());
+  
+  if (_displayInitialized) {
+    _pDisplay->clearDisplay();
+    _pDisplay->setTextSize(1);
+    _pDisplay->setCursor(0, 0);
+    _pDisplay->println("BMD Camera Found");
+    _pDisplay->println("Connecting...");
+    _pDisplay->display();
+  }
+  
+  // Create BLE client
+  _pClient = BLEDevice::createClient();
+  
+  // Set up security
+  BLESecurity* pSecurity = new BLESecurity();
+  pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
+  pSecurity->setCapability(ESP_IO_CAP_IN);
+  pSecurity->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+  
+  // Connect to device
+  if (!_pClient->connect(*_pServerAddress)) {
+    Serial.println("Connection failed");
+    if (_displayInitialized) {
+      _pDisplay->clearDisplay();
+      _pDisplay->setCursor(0, 0);
+      _pDisplay->println("Connection failed!");
+      _pDisplay->display();
+    }
+    return false;
+  }
+  
+  Serial.println("Connected to camera");
+  
+  // Get Blackmagic service
+  _pRemoteService = _pClient->getService(BLEUUID(BMD_SERVICE_UUID));
+  if (_pRemoteService == nullptr) {
+    Serial.println("Failed to find Blackmagic camera service");
+    _pClient->disconnect();
+    return false;
+  }
+  
+  Serial.println("Found Blackmagic camera service");
+  
+  // Get characteristics
+  _pOutgoingCameraControl = _pRemoteService->getCharacteristic(BLEUUID(BMD_OUTGOING_CONTROL_UUID));
+  if (_pOutgoingCameraControl == nullptr) {
+    Serial.println("Failed to find outgoing control characteristic");
+    _pClient->disconnect();
+    return false;
+  }
+  
+  _pIncomingCameraControl = _pRemoteService->getCharacteristic(BLEUUID(BMD_INCOMING_CONTROL_UUID));
+  if (_pIncomingCameraControl == nullptr) {
+    Serial.println("Failed to find incoming control characteristic");
+    _pClient->disconnect();
+    return false;
+  }
+  
+  _pTimecode = _pRemoteService->getCharacteristic(BLEUUID(BMD_TIMECODE_UUID));
+  _pCameraStatus = _pRemoteService->getCharacteristic(BLEUUID(BMD_CAMERA_STATUS_UUID));
+  
+  // Set device name
+  _pDeviceName = _pRemoteService->getCharacteristic(BLEUUID(BMD_DEVICE_NAME_UUID));
+  if (_pDeviceName) {
+    Serial.println("Setting device name to \"" + _deviceName + "\"");
+    _pDeviceName->writeValue(_deviceName.c_str(), _deviceName.length());
+  }
+  
+  // Register for notifications
+  _pIncomingCameraControl->registerForNotify(notifyCallback, this);
+  Serial.println("Enabling indications for incoming camera control");
+  if (!setNotification(_pIncomingCameraControl, true, true)) {
+    Serial.println("Failed to enable indications");
+  }
+  
+  if (_pTimecode) {
+    _pTimecode->registerForNotify(timecodeNotifyCallback, this);
+    setNotification(_pTimecode, true, false);
+  }
+  
+  if (_pCameraStatus) {
+    _pCameraStatus->registerForNotify(statusNotifyCallback, this);
+  }
+  
+  _connected = true;
+  
+  if (_displayInitialized) {
+    _pDisplay->clearDisplay();
+    _pDisplay->setCursor(0, 0);
+    _pDisplay->println("Connected!");
+    _pDisplay->println("Receiving camera data...");
+    _pDisplay->display();
+  }
+  
+  // Initial parameter requests
+  requestLensInfo();
+  
+  return true;
+}
+
+// Disconnect from camera
+bool BMDBLEController::disconnect() {
+  if (!_connected || !_pClient) {
+    return false;
+  }
+  
+  _pClient->disconnect();
+  _connected = false;
+  
+  Serial.println("Disconnected from camera");
+  
+  if (_displayInitialized) {
+    _pDisplay->clearDisplay();
+    _pDisplay->setCursor(0, 0);
+    _pDisplay->println("Disconnected");
+    _pDisplay->display();
+  }
+  
+  return true;
+}
+
+// Check if connected to camera
 bool BMDBLEController::isConnected() {
-  return _connected;
-}
-
-bool BMDBLEController::isBonded() {
-  return _bonded;
-}
-
-
-bool BMDBLEController::sendCommand(uint8_t* command, size_t length) {
-    if (!_connected || !_pOutgoingCharacteristic) {
-        return false; // Not connected or characteristic not found
+  if (_pClient) {
+    bool actuallyConnected = _pClient->isConnected();
+    if (_connected && !actuallyConnected) {
+      // Connection was lost
+      _connected = false;
     }
-    // Use writeValue with the 'response' parameter set to false for best performance.
-    _pOutgoingCharacteristic->writeValue(command, length, false); //Corrected: return type is void
-    return true; //Assume success if connected.
+    return actuallyConnected;
+  }
+  return false;
 }
 
-bool BMDBLEController::sendCommand(uint8_t destination, uint8_t commandId, uint8_t category, uint8_t parameter, uint8_t dataType, uint8_t operationType, uint8_t* data, size_t dataLength)
-{
-    if (!_connected || !_pOutgoingCharacteristic) {
-        return false;
-    }
+// Clear bonding information
+void BMDBLEController::clearBondingInfo() {
+  preferences.begin("bmdcamera", false);
+  preferences.clear();
+  preferences.end();
+  
+  if (_pServerAddress) {
+    esp_ble_remove_bond_device(*_pServerAddress->getNative());
+  }
+  
+  // Clear bonded devices
+  int dev_num = esp_ble_get_bond_device_num();
+  esp_ble_bond_dev_t* dev_list = (esp_ble_bond_dev_t*)malloc(sizeof(esp_ble_bond_dev_t) * dev_num);
+  esp_ble_get_bond_device_list(&dev_num, dev_list);
+  for (int i = 0; i < dev_num; i++) {
+    esp_ble_remove_bond_device(dev_list[i].bd_addr);
+  }
+  free(dev_list);
+  
+  Serial.println("Cleared all saved pairing information");
+  
+  if (_displayInitialized) {
+    _pDisplay->clearDisplay();
+    _pDisplay->setCursor(0, 0);
+    _pDisplay->println("Pairing info");
+    _pDisplay->println("cleared!");
+    _pDisplay->display();
+  }
+}
 
-    // Calculate the total command length (header + data + padding)
-    size_t commandLength = 3 + dataLength; // Header (3 bytes) + Data
-    size_t paddedLength = (commandLength + 3) & ~0x03; // Round up to the nearest 4-byte boundary
-    uint8_t paddingBytes = paddedLength - commandLength;
+// Set auto reconnect option
+void BMDBLEController::setAutoReconnect(bool enabled) {
+  _autoReconnect = enabled;
+}
 
-    // Create a buffer for the command packet
-    uint8_t* commandPacket = new uint8_t[paddedLength];
+// Set focus using raw value (0-2048)
+bool BMDBLEController::setFocus(uint16_t rawValue) {
+  if (!_connected || !_pOutgoingCameraControl) {
+    Serial.println("Not connected to camera");
+    return false;
+  }
+  
+  // Calculate normalized value for display
+  float normalizedValue = (float)rawValue / 2048.0f;
+  
+  // Create focus command
+  uint8_t focusCommand[12] = {
+    0xFF,                    // Protocol identifier
+    0x08,                    // Command length
+    0x00, 0x00,              // Command ID, Reserved
+    BMD_CAT_LENS,            // Category (Lens)
+    BMD_PARAM_FOCUS,         // Parameter (Focus)
+    BMD_TYPE_FIXED16,        // Data type (fixed16)
+    BMD_OP_ASSIGN,           // Operation (assign)
+    (uint8_t)(rawValue & 0xFF),          // Low byte
+    (uint8_t)((rawValue >> 8) & 0xFF),   // High byte
+    0x00, 0x00               // Padding
+  };
+  
+  Serial.print("Setting focus to raw value: ");
+  Serial.print(rawValue);
+  Serial.print(" (");
+  Serial.print(normalizedValue, 3);
+  Serial.println(" normalized)");
+  
+  // Send command
+  _pOutgoingCameraControl->writeValue(focusCommand, sizeof(focusCommand), true);
+  
+  return true;
+}
 
-    // Construct the header
-    commandPacket[0] = destination;       // Destination Device
-    commandPacket[1] = (uint8_t)dataLength;      // Command Length (data length only)
-    commandPacket[2] = commandId;         // Command ID
-    // Byte 3 is reserved, and already 0 due to the new allocation
+// Set focus using normalized value (0.0-1.0)
+bool BMDBLEController::setFocus(float normalizedValue) {
+  // Convert normalized value to raw (0-2048)
+  if (normalizedValue < 0.0) normalizedValue = 0.0;
+  if (normalizedValue > 1.0) normalizedValue = 1.0;
+  
+  uint16_t rawValue = (uint16_t)(normalizedValue * 2048.0);
+  return setFocus(rawValue);
+}
 
-    // Construct command 0 data
-    if (commandId == 0)
-    {
-        commandPacket[3] = category;        // Category
-        commandPacket[4] = parameter;       // Parameter
-        commandPacket[5] = dataType;        // Data Type
-        commandPacket[6] = operationType;   // Operation Type
-        // Copy the data
-        if (data && dataLength > 0) {
-            memcpy(&commandPacket[7], data, dataLength);
-        }
+// Set iris/aperture (normalized 0.0-1.0)
+bool BMDBLEController::setIris(float normalizedValue) {
+  if (!_connected || !_pOutgoingCameraControl) {
+    Serial.println("Not connected to camera");
+    return false;
+  }
+  
+  // Clamp value
+  if (normalizedValue < 0.0) normalizedValue = 0.0;
+  if (normalizedValue > 1.0) normalizedValue = 1.0;
+  
+  // Create iris command
+  uint8_t irisCommand[12] = {
+    0xFF,                    // Protocol identifier
+    0x08,                    // Command length
+    0x00, 0x00,              // Command ID, Reserved
+    BMD_CAT_LENS,            // Category (Lens)
+    BMD_PARAM_IRIS_NORM,     // Parameter (Aperture normalized)
+    BMD_TYPE_FIXED16,        // Data type (fixed16)
+    BMD_OP_ASSIGN,           // Operation (assign)
+    0x00, 0x00,              // Data bytes (will be filled)
+    0x00, 0x00               // Padding
+  };
+  
+  // Convert normalized value to fixed16 format
+  int16_t fixed16Value = (int16_t)(normalizedValue * 2048.0);
+  
+  // Set data bytes (little endian)
+  irisCommand[8] = (fixed16Value & 0xFF);         // Low byte
+  irisCommand[9] = ((fixed16Value >> 8) & 0xFF);  // High byte
+  
+  Serial.print("Setting iris to normalized value: ");
+  Serial.println(normalizedValue, 3);
+  
+  // Send command
+  _pOutgoingCameraControl->writeValue(irisCommand, sizeof(irisCommand), true);
+  
+  return true;
+}
 
+// Set white balance
+bool BMDBLEController::setWhiteBalance(uint16_t kelvin) {
+  if (!_connected || !_pOutgoingCameraControl) {
+    Serial.println("Not connected to camera");
+    return false;
+  }
+  
+  // Limit to reasonable range
+  if (kelvin < 2500) kelvin = 2500;
+  if (kelvin > 10000) kelvin = 10000;
+  
+  // Create white balance command
+  uint8_t wbCommand[14] = {
+    0xFF,  // Destination
+    0x08,  // Length
+    0x00, 0x00,  // Command ID, Reserved
+    BMD_CAT_VIDEO,  // Category (Video)
+    BMD_PARAM_WB,   // Parameter (White Balance)
+    BMD_TYPE_INT16, // Data Type (signed 16-bit integer)
+    BMD_OP_ASSIGN,  // Operation (assign)
+    (uint8_t)(kelvin & 0xFF),         // WB low byte
+    (uint8_t)((kelvin >> 8) & 0xFF),  // WB high byte
+    0,    // Tint low byte (0 = no tint)
+    0,    // Tint high byte
+    0,    // Padding
+    0     // Padding
+  };
+  
+  Serial.print("Setting white balance to: ");
+  Serial.print(kelvin);
+  Serial.println("K");
+  
+  // Send command
+  _pOutgoingCameraControl->writeValue(wbCommand, sizeof(wbCommand), true);
+  
+  return true;
+}
+
+// Toggle recording state
+bool BMDBLEController::toggleRecording() {
+  if (!_connected || !_pOutgoingCameraControl) {
+    Serial.println("Not connected to camera");
+    return false;
+  }
+  
+  // Create recording command
+  uint8_t recordingCommand[12] = {
+    0xFF,  // Protocol identifier
+    0x05,  // Length (5 bytes after this)
+    0x00, 0x00,  // Command ID, Reserved
+    BMD_CAT_TRANSPORT,  // Category (Transport/Media)
+    0x01,  // Parameter (Transport mode)
+    BMD_TYPE_BYTE,  // Data type (signed byte)
+    BMD_OP_ASSIGN,  // Operation (assign)
+    _recordingState ? 0x00 : 0x02,  // Mode (0=Preview, 2=Record)
+    0x00, 0x00, 0x00  // Padding
+  };
+  
+  Serial.print("Sending recording command: ");
+  Serial.println(_recordingState ? "STOP" : "START");
+  
+  // Send command
+  _pOutgoingCameraControl->writeValue(recordingCommand, sizeof(recordingCommand), true);
+  
+  // We'll update _recordingState when we get confirmation from the camera
+  
+  return true;
+}
+
+// Get recording state
+bool BMDBLEController::isRecording() {
+  return _recordingState;
+}
+
+// Execute auto focus
+bool BMDBLEController::doAutoFocus() {
+  if (!_connected || !_pOutgoingCameraControl) {
+    Serial.println("Not connected to camera");
+    return false;
+  }
+  
+  // Create auto focus command
+  uint8_t afCommand[8] = {
+    0xFF,  // Protocol identifier
+    0x04,  // Length
+    0x00, 0x00,  // Command ID, Reserved
+    BMD_CAT_LENS,  // Category (Lens)
+    0x01,  // Parameter (Instantaneous autofocus)
+    BMD_TYPE_VOID,  // Data type (void)
+    BMD_OP_ASSIGN   // Operation (assign)
+  };
+  
+  Serial.println("Executing auto focus");
+  
+  // Send command
+  _pOutgoingCameraControl->writeValue(afCommand, sizeof(afCommand), true);
+  
+  return true;
+}
+
+// Request a specific parameter
+bool BMDBLEController::requestParameter(uint8_t category, uint8_t parameterId, uint8_t dataType) {
+  if (!_connected || !_pOutgoingCameraControl) {
+    Serial.println("Not connected to camera");
+    return false;
+  }
+  
+  // Create request command
+  uint8_t requestCommand[12] = {
+    0xFF,         // Protocol identifier
+    0x08,         // Command length
+    0x00, 0x00,   // Command ID, Reserved
+    category,     // Category
+    parameterId,  // Parameter
+    dataType,     // Data type
+    BMD_OP_REPORT,// Operation (report/request)
+    0x00, 0x00,   // Empty data
+    0x00, 0x00    // Padding
+  };
+  
+  Serial.print("Requesting Parameter - Cat: 0x");
+  Serial.print(category, HEX);
+  Serial.print(" Param: 0x");
+  Serial.println(parameterId, HEX);
+  
+  // Send command
+  _pOutgoingCameraControl->writeValue(requestCommand, sizeof(requestCommand), true);
+  
+  return true;
+}
+
+// Get parameter value as string
+String BMDBLEController::getParameterValue(uint8_t category, uint8_t parameterId) {
+  ParameterValue* param = findParameter(category, parameterId);
+  if (param && param->valid) {
+    return decodeParameterToString(param);
+  }
+  return "Not available";
+}
+
+// Check if parameter exists
+bool BMDBLEController::hasParameter(uint8_t category, uint8_t parameterId) {
+  ParameterValue* param = findParameter(category, parameterId);
+  return (param != nullptr && param->valid);
+}
+
+// Update OLED display
+void BMDBLEController::updateDisplay() {
+  if (!_displayInitialized || !_pDisplay) {
+    return;
+  }
+  
+  _pDisplay->clearDisplay();
+  _pDisplay->setTextSize(1);
+  _pDisplay->setTextColor(SSD1306_WHITE);
+  _pDisplay->setCursor(0, 0);
+  
+  if (!_connected) {
+    if (_deviceFound && !_connected) {
+      _pDisplay->println("BMD Camera Found");
+      _pDisplay->println("Press button to connect");
+    } else if (_scanInProgress) {
+      _pDisplay->println("Scanning for");
+      _pDisplay->println("Blackmagic camera...");
     } else {
-        // Copy the data for other commands
-        if (data && dataLength > 0) {
-            memcpy(&commandPacket[3], data, dataLength);
-        }
+      _pDisplay->println("BMDBLEController");
+      _pDisplay->println("Not connected");
+      _pDisplay->println("Press button to scan");
     }
-
-    // Add padding
-    for (size_t i = 0; i < paddingBytes; ++i) {
-        commandPacket[commandLength + i] = 0x00;
+  } else {
+    // Connected state - display depends on mode
+    switch (_currentDisplayMode) {
+      case BMD_DISPLAY_FOCUS:
+        displayFocusMode();
+        break;
+      
+      case BMD_DISPLAY_RECORDING:
+        displayRecordingMode();
+        break;
+      
+      case BMD_DISPLAY_DEBUG:
+        displayDebugMode();
+        break;
+      
+      case BMD_DISPLAY_BASIC:
+      default:
+        displayBasicMode();
+        break;
     }
-
-    // Send the command
-    //bool result = _pOutgoingCharacteristic->writeValue(commandPacket, paddedLength, false); //Corrected return type is void.
-    _pOutgoingCharacteristic->writeValue(commandPacket, paddedLength, false);
-    // Clean up
-    delete[] commandPacket;
-
-    return true; //Assume success if connected
+  }
+  
+  _pDisplay->display();
 }
 
+// Set display mode
+void BMDBLEController::setDisplayMode(uint8_t mode) {
+  _currentDisplayMode = mode;
+  updateDisplay();
+}
 
+// Set callback for parameter responses
+void BMDBLEController::setResponseCallback(void (*callback)(uint8_t, uint8_t, String)) {
+  _responseCallback = callback;
+}
 
-void BMDBLEController::setIncomingDataCallback(IncomingDataCallback callback) {
-    _incomingDataCallback = callback;
-     // If already connected and callbacks are not yet set, set them now.
-    if(_connected && !_callbacksSet && _pIncomingCharacteristic){
-        _pIncomingCharacteristic->subscribe(true, _incomingDataNotifyCallback, true); // Use subscribe()
+// Main loop function - must be called regularly
+void BMDBLEController::loop() {
+  // Check connection status
+  if (_pClient && _connected && !_pClient->isConnected()) {
+    Serial.println("Connection lost!");
+    _connected = false;
+    
+    if (_displayInitialized) {
+      _pDisplay->clearDisplay();
+      _pDisplay->setCursor(0, 0);
+      _pDisplay->println("Connection lost!");
+      _pDisplay->display();
     }
-}
-
-void BMDBLEController::setStatusCallback(StatusCallback callback) {
-    _statusCallback = callback;
-    if(_connected && !_callbacksSet && _pStatusCharacteristic){
-        _pStatusCharacteristic->subscribe(true, _statusNotifyCallback, true); // Use subscribe()
+  }
+  
+  // Try to reconnect if device found but not connected
+  if (_deviceFound && !_connected && _autoReconnect) {
+    unsigned long currentTime = millis();
+    if (currentTime - _lastReconnectAttempt >= RECONNECT_INTERVAL || _lastReconnectAttempt == 0) {
+      _lastReconnectAttempt = currentTime;
+      connect();
     }
+  }
+  
+  // Update display
+  if (_displayInitialized && millis() - _lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL) {
+    updateDisplay();
+    _lastDisplayUpdate = millis();
+  }
 }
 
-// Static callback function for incoming data notifications (NimBLE version)
-void BMDBLEController::_incomingDataNotifyCallback(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-    // Call the user-provided callback (if set) using the instance pointer
-    if (_instance && _instance->_incomingDataCallback) {
-        _instance->_incomingDataCallback(pData, length);
+// Find parameter by category and ID
+ParameterValue* BMDBLEController::findParameter(uint8_t category, uint8_t parameterId) {
+  for (int i = 0; i < _paramCount; i++) {
+    if (_parameters[i].category == category && 
+        _parameters[i].parameterId == parameterId &&
+        _parameters[i].valid) {
+      return &_parameters[i];
     }
+  }
+  
+  return nullptr;
 }
 
-// Static callback function for status notifications (NimBLE version)
-void BMDBLEController::_statusNotifyCallback(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-    // Call the user-provided callback (if set) using the instance pointer
-    if (_instance && _instance->_statusCallback) {
-        if(length > 0){
-            uint8_t status = pData[0];
-            // Don't set _bonded here.  Wait for the onConnect callback.
-            _instance->_statusCallback(status);
-        }
+// Store a parameter
+void BMDBLEController::storeParameter(uint8_t category, uint8_t parameterId, uint8_t dataType, 
+                                 uint8_t operation, uint8_t* data, size_t dataLength) {
+  // Look for existing parameter
+  ParameterValue* param = findParameter(category, parameterId);
+  
+  // Create new parameter if not found
+  if (param == nullptr) {
+    if (_paramCount >= MAX_PARAMETERS) {
+      Serial.println("Parameter storage full");
+      return;
     }
+    
+    param = &_parameters[_paramCount++];
+    param->category = category;
+    param->parameterId = parameterId;
+  }
+  
+  // Update parameter data
+  param->dataType = dataType;
+  param->operation = operation;
+  param->dataLength = min(dataLength, (size_t)64);
+  memcpy(param->data, data, param->dataLength);
+  param->timestamp = millis();
+  param->valid = true;
+  
+  // Print parameter info (debug)
+  String decodedValue = decodeParameterToString(param);
+  Serial.print("Received parameter - Cat: 0x");
+  Serial.print(category, HEX);
+  Serial.print(" Param: 0x");
+  Serial.print(parameterId, HEX);
+  Serial.print(" Data: ");
+  Serial.println(decodedValue);
+  
+  // Call callback if set
+  if (_responseCallback) {
+    _responseCallback(category, parameterId, decodedValue);
+  }
+  
+  // Special handling for specific parameters
+  handleSpecialParameters(category, parameterId, decodedValue);
 }
 
-
-// Helper function to convert float to 5.11 fixed-point
-uint16_t BMDBLEController::_floatToFixed16(float value) {
-    return (uint16_t)(value * 2048.0f);
+// Handle special parameter updates
+void BMDBLEController::handleSpecialParameters(uint8_t category, uint8_t parameterId, String value) {
+  // Update recording state
+  if (category == BMD_CAT_TRANSPORT && parameterId == 0x01) {
+    if (value.indexOf("2") != -1) {
+      _recordingState = true;
+      Serial.println("Recording state: RECORDING");
+    } else {
+      _recordingState = false;
+      Serial.println("Recording state: STOPPED");
+    }
+  }
+  
+  // Update display after receiving important parameters
+  if (_displayInitialized) {
+    if (category == BMD_CAT_EXTENDED_LENS || 
+        category == BMD_CAT_LENS ||
+        (category == BMD_CAT_TRANSPORT && parameterId == 0x01) ||
+        (category == BMD_CAT_VIDEO && parameterId == BMD_PARAM_WB)) {
+      updateDisplay();
+    }
+  }
 }
 
-// --- Convenience Function Implementations (Examples) ---
-
-bool BMDBLEController::setAperture(float fStop) {
-    // Calculate the 5.11 fixed-point representation
-    // Aperture Value (AV) = sqrt(2^fnumber)
-    float apertureValue = sqrt(pow(2,fStop));
-    uint16_t fixedValue = _floatToFixed16(apertureValue);
-    // Split the 16-bit value into two bytes (little-endian)
-    uint8_t data[2] = { (uint8_t)(fixedValue & 0xFF), (uint8_t)(fixedValue >> 8) };
-    return sendCommand(0, 0, 0, 2, 128, 0, data, 2); // Camera 0, Lens, Aperture (f-stop), fixed16, assign
+// Request lens information
+void BMDBLEController::requestLensInfo() {
+  // Request lens model
+  requestParameter(BMD_CAT_EXTENDED_LENS, 0x09, BMD_TYPE_STRING);
+  
+  // Request focal length
+  requestParameter(BMD_CAT_EXTENDED_LENS, 0x0B, BMD_TYPE_STRING);
+  
+  // Request focus distance
+  requestParameter(BMD_CAT_EXTENDED_LENS, 0x0C, BMD_TYPE_STRING);
+  
+  // Request basic parameters
+  requestParameter(BMD_CAT_VIDEO, BMD_PARAM_WB, BMD_TYPE_INT16);
+  requestParameter(BMD_CAT_LENS, BMD_PARAM_FOCUS, BMD_TYPE_FIXED16);
+  requestParameter(BMD_CAT_LENS, BMD_PARAM_IRIS_NORM, BMD_TYPE_FIXED16);
+  requestParameter(BMD_CAT_TRANSPORT, 0x01, BMD_TYPE_BYTE);
 }
 
-bool BMDBLEController::setISO(int iso) {
-    // Convert int to byte array (little-endian)
-    uint8_t data[4] = {
-        (uint8_t)(iso & 0xFF),
-        (uint8_t)((iso >> 8) & 0xFF),
-        (uint8_t)((iso >> 16) & 0xFF),
-        (uint8_t)((iso >> 24) & 0xFF)
-    };
-    return sendCommand(0, 0, 1, 14, 3, 0, data, 4); // Camera 0, Video, ISO, signed32, assign
+// Process incoming packet
+void BMDBLEController::processIncomingPacket(uint8_t* pData, size_t length) {
+  // Verify packet is long enough
+  if (length < 8) {
+    Serial.println("Invalid packet: too short");
+    return;
+  }
+  
+  // Parse basic packet format
+  uint8_t protocolId = pData[0];
+  uint8_t packetLength = pData[1];
+  uint8_t commandId = pData[2];
+  uint8_t reserved = pData[3];
+  uint8_t category = pData[4];
+  uint8_t parameterId = pData[5];
+  uint8_t dataType = pData[6];
+  uint8_t operation = pData[7];
+  
+  // Filter out battery voltage packets (Category 0x09, Parameter 0x00) to reduce spam
+  if (category == 0x09 && parameterId == 0x00) {
+    // Don't return - we still want to store these parameters
+  }
+  
+  // Store parameter value
+  storeParameter(category, parameterId, dataType, operation, &pData[8], length - 8);
 }
 
-bool BMDBLEController::setWhiteBalance(int kelvin, int tint) {
-    // Split kelvin and tint into byte arrays (little-endian)
-    uint8_t data[4] = {
-        (uint8_t)(kelvin & 0xFF),
-        (uint8_t)((kelvin >> 8) & 0xFF),
-        (uint8_t)(tint & 0xFF),
-        (uint8_t)((tint >> 8) & 0xFF)
-    };
-    return sendCommand(0, 0, 1, 2, 2, 0, data, 4);  //Camera 0, Video, White Balance, signed16, assign
+// Process timecode packet
+void BMDBLEController::processTimecodePacket(uint8_t* pData, size_t length) {
+  if (length >= 4) {
+    // Blackmagic timecode format is BCD (Binary-Coded Decimal)
+    uint8_t frames = (pData[0] >> 4) * 10 + (pData[0] & 0x0F);
+    uint8_t seconds = (pData[1] >> 4) * 10 + (pData[1] & 0x0F);
+    uint8_t minutes = (pData[2] >> 4) * 10 + (pData[2] & 0x0F);
+    uint8_t hours = (pData[3] >> 4) * 10 + (pData[3] & 0x0F);
+    
+    char tc[12];
+    sprintf(tc, "%02d:%02d:%02d:%02d", hours, minutes, seconds, frames);
+    _timecodeStr = String(tc);
+    
+    Serial.print("Timecode: ");
+    Serial.println(_timecodeStr);
+  }
 }
 
-bool BMDBLEController::setShutterAngle(float angle)
-{
-    uint32_t angleValue = (uint32_t)(angle*100); //as per documentation
-    uint8_t data[4] = {
-        (uint8_t)(angleValue & 0xFF),
-        (uint8_t)((angleValue >> 8) & 0xFF),
-        (uint8_t)((angleValue >> 16) & 0xFF),
-        (uint8_t)((angleValue >> 24) & 0xFF)
-    };
-    return sendCommand(0, 0, 1, 11, 3, 0, data, 4); //Camera 0, Video, Shutter Angle, signed32, assign
+// Process status packet
+void BMDBLEController::processStatusPacket(uint8_t* pData, size_t length) {
+  if (length > 0) {
+    _cameraStatus = pData[0];
+    Serial.print("Camera status: 0x");
+    Serial.println(_cameraStatus, HEX);
+  }
 }
 
-bool BMDBLEController::setNDFilter(float stop)
-{
-    uint16_t stopValue = _floatToFixed16(stop);
-    uint8_t data[2] = { (uint8_t)(stopValue & 0xFF), (uint8_t)(stopValue >> 8) };
-    return sendCommand(0, 0, 1, 16, 128, 0, data, 2); //Camera 0, Video, ND Filter Stop, fixed16, assign
+// Display basic mode
+void BMDBLEController::displayBasicMode() {
+  // Header with lens model if available
+  ParameterValue* lensModel = findParameter(BMD_CAT_EXTENDED_LENS, 0x09);
+  if (lensModel && lensModel->valid) {
+    String model = decodeParameterToString(lensModel);
+    _pDisplay->println(model.substring(0, 21)); // Limit length to fit display
+  } else {
+    _pDisplay->println("BMD Camera Connected");
+  }
+  
+  // Recording state and timecode
+  if (_recordingState) {
+    _pDisplay->print("REC  ");
+    // Blinking REC symbol
+    if (millis() % 1000 < 500) {
+      _pDisplay->fillCircle(25, 4, 3, SSD1306_WHITE);
+    }
+  } else {
+    _pDisplay->print("STBY ");
+  }
+  
+  _pDisplay->println(_timecodeStr);
+  
+  // White balance if available
+  ParameterValue* wb = findParameter(BMD_CAT_VIDEO, BMD_PARAM_WB);
+  if (wb && wb->valid) {
+    _pDisplay->print("WB: ");
+    _pDisplay->println(decodeParameterToString(wb));
+  }
+  
+  // Focal length and focus distance if available
+  ParameterValue* focalLength = findParameter(BMD_CAT_EXTENDED_LENS, 0x0B);
+  ParameterValue* focusDistance = findParameter(BMD_CAT_EXTENDED_LENS, 0x0C);
+  
+  if (focalLength && focalLength->valid) {
+    _pDisplay->print(decodeParameterToString(focalLength));
+    _pDisplay->print("  ");
+  }
+  
+  if (focusDistance && focusDistance->valid) {
+    _pDisplay->println(decodeParameterToString(focusDistance));
+  } else {
+    _pDisplay->println("");
+  }
+  
+  // Battery voltage if available
+  ParameterValue* batteryVoltage = findParameter(0x09, 0x00);
+  if (batteryVoltage && batteryVoltage->valid && batteryVoltage->dataLength >= 2) {
+    int16_t rawVoltage = (int16_t)(batteryVoltage->data[0] | (batteryVoltage->data[1] << 8));
+    float voltage = (float)rawVoltage / 1000.0f;
+    _pDisplay->print("Batt: ");
+    _pDisplay->print(voltage, 1);
+    _pDisplay->println("V");
+  }
+  
+  // Focus value if available
+  ParameterValue* focus = findParameter(BMD_CAT_LENS, BMD_PARAM_FOCUS);
+  if (focus && focus->valid) {
+    int16_t rawValue = (int16_t)(focus->data[0] | (focus->data[1] << 8));
+    float normalizedValue = (float)rawValue / 2048.0f;
+    
+    _pDisplay->print("Focus: ");
+    _pDisplay->println(normalizedValue, 3);
+    
+    // Draw focus position bar
+    _pDisplay->drawRect(0, 56, 128, 8, SSD1306_WHITE);
+    int barWidth = (int)(normalizedValue * 126);
+    _pDisplay->fillRect(1, 57, barWidth, 6, SSD1306_WHITE);
+  }
 }
 
-bool BMDBLEController::autoFocus()
-{
-    return sendCommand(0, 0, 0, 1, 0, 0, nullptr, 0); //Camera 0, Lens, Instantaneous autofocus, void, assign
+// Display recording mode
+void BMDBLEController::displayRecordingMode() {
+  // Header with recording state
+  if (_recordingState) {
+    _pDisplay->print("REC  ");
+    // Blinking REC symbol
+    if (millis() % 1000 < 500) {
+      _pDisplay->fillCircle(25, 4, 3, SSD1306_WHITE);
+    }
+  } else {
+    _pDisplay->print("STBY ");
+  }
+  
+  // Show timecode
+  _pDisplay->println(_timecodeStr);
+  
+  // Lens info if available
+  ParameterValue* lensModel = findParameter(BMD_CAT_EXTENDED_LENS, 0x09);
+  if (lensModel && lensModel->valid) {
+    String model = decodeParameterToString(lensModel);
+    _pDisplay->println(model.substring(0, 21)); // Limit length to fit display
+  }
+  
+  // Show white balance
+  ParameterValue* wb = findParameter(BMD_CAT_VIDEO, BMD_PARAM_WB);
+  if (wb && wb->valid) {
+    _pDisplay->print("WB: ");
+    _pDisplay->print(decodeParameterToString(wb));
+    _pDisplay->print("  ");
+  }
+  
+  // Show iris/aperture if available
+  ParameterValue* iris = findParameter(BMD_CAT_LENS, BMD_PARAM_IRIS_NORM);
+  if (iris && iris->valid) {
+    int16_t rawValue = (int16_t)(iris->data[0] | (iris->data[1] << 8));
+    float normalizedValue = (float)rawValue / 2048.0f;
+    _pDisplay->print("f/");
+    _pDisplay->println(2.8 + normalizedValue * 19.2, 1); // Approximate f-stop conversion
+  } else {
+    _pDisplay->println("");
+  }
+  
+  // Show remaining card space if available (future)
+  
+  // Battery voltage if available
+  ParameterValue* batteryVoltage = findParameter(0x09, 0x00);
+  if (batteryVoltage && batteryVoltage->valid && batteryVoltage->dataLength >= 2) {
+    int16_t rawVoltage = (int16_t)(batteryVoltage->data[0] | (batteryVoltage->data[1] << 8));
+    float voltage = (float)rawVoltage / 1000.0f;
+    _pDisplay->print("Batt: ");
+    _pDisplay->print(voltage, 1);
+    _pDisplay->println("V");
+  }
+  
+  // Show clip filename if recording
+  ParameterValue* clipFilename = findParameter(BMD_CAT_EXTENDED_LENS, 0x0F); // Clip filename
+  if (_recordingState && clipFilename && clipFilename->valid) {
+    String filename = decodeParameterToString(clipFilename);
+    if (filename.length() > 2) { // Valid filename
+      _pDisplay->println(filename.substring(0, 21)); // Limit length to fit display
+    }
+  }
 }
 
-bool BMDBLEController::autoExposure(uint8_t mode)
-{
-    return sendCommand(0, 0, 1, 10, 1, 0, &mode, 1); //Camera 0, Video, Auto exposure mode, int8, assign
+// Display debug mode - show raw parameter values
+void BMDBLEController::displayDebugMode() {
+  _pDisplay->println("Debug Mode");
+  _pDisplay->print("Params: ");
+  _pDisplay->println(_paramCount);
+  
+  // Show last 4 parameters received
+  int startIdx = max(0, _paramCount - 4);
+  for (int i = startIdx; i < _paramCount; i++) {
+    if (_parameters[i].valid) {
+      _pDisplay->print("0x");
+      _pDisplay->print(_parameters[i].category, HEX);
+      _pDisplay->print(",0x");
+      _pDisplay->print(_parameters[i].parameterId, HEX);
+      _pDisplay->print(": ");
+      
+      // Show first few bytes
+      for (int j = 0; j < min(4, (int)_parameters[i].dataLength); j++) {
+        if (_parameters[i].data[j] < 0x10) _pDisplay->print("0");
+        _pDisplay->print(_parameters[i].data[j], HEX);
+        _pDisplay->print(" ");
+      }
+      _pDisplay->println("");
+    }
+  }
+  
+  // Show connection info
+  _pDisplay->print("Conn: ");
+  _pDisplay->println(_connected ? "Yes" : "No");
+  _pDisplay->print("BLE: ");
+  if (_pClient) {
+    _pDisplay->println(_pClient->isConnected() ? "Connected" : "Disconnected");
+  } else {
+    _pDisplay->println("No client");
+  }
 }
 
-bool BMDBLEController::setRecordingFormat(uint8_t fileFrameRate, uint8_t sensorFrameRate, uint16_t frameWidth, uint16_t frameHeight, uint8_t flags)
-{
-    uint8_t data[9] = {
-        fileFrameRate,
-        sensorFrameRate,
-        (uint8_t)(frameWidth & 0xFF),
-        (uint8_t)((frameWidth >> 8) & 0xFF),
-        (uint8_t)(frameHeight & 0xFF),
-        (uint8_t)((frameHeight >> 8) & 0xFF),
-        (uint8_t)(flags & 0xFF),
-        0, //Padding
-        0
-    };
-    return sendCommand(0, 0, 1, 9, 2, 0, data, 9); //Camera 0, Video, Recording Format, int16, assign
-}
-
-bool BMDBLEController::setTransportMode(uint8_t mode, int8_t speed)
-{
-    uint8_t data[2] = {
-        mode,
-        (uint8_t)speed
-    };
-
-    return sendCommand(0, 0, 10, 1, 1, 0, data, 2); //Camera 0, Media, Transport Mode, int8, assign
-}
-
-bool BMDBLEController::setCodec(uint8_t basicCodec, uint8_t codeVariant)
-{
-    uint8_t data[2] = {
-        basicCodec,
-        codeVariant
-    };
-    return sendCommand(0, 0, 10, 0, 1, 0, data, 2); //Camera 0, Media, Codec, int8 enum, assign
+// Display focus mode
+void BMDBLEController::displayFocusMode() {
+  // Title with lens model if available
+  ParameterValue* lensModel = findParameter(BMD_CAT_EXTENDED_LENS, 0x09);
+  if (lensModel && lensModel->valid) {
+    String model = decodeParameterToString(lensModel);
+    _pDisplay->println(model.substring(0, 21)); // Limit length to fit display
+  } else {
+    _pDisplay->println("BMD Camera");
+  }
+  
+  // Show focus value
+  ParameterValue* focus = findParameter(BMD_CAT_LENS, BMD_PARAM_FOCUS);
+  if (focus && focus->valid) {
+    String focusStr = decodeParameterToString(focus);
+    _pDisplay->println("Focus: " + focusStr);
+    
+    // Extract normalized value and draw focus bar
+    int16_t rawValue = (int16_t)(focus->data[0] | (focus->data[1] << 8));
+    float normalizedValue = (float)rawValue / 2048.0f;
+    
+    // Draw focus position bar
+    _pDisplay->drawRect(0, 25, 128, 8, SSD1306_WHITE);
+    int barWidth = (int)(normalizedValue * 126);
+    _pDisplay->fillRect(1, 26, barWidth, 6, SSD1306_WHITE);
+  } else {
+    _pDisplay->println("Focus: Unknown");
+  }
+  
+  // Show focal length if available
+  ParameterValue* focalLength = findParameter(BMD_CAT_EXTENDED_LENS, 0x0B);
+  if (focalLength && focalLength->valid) {
+    String flStr = decodeParameterToString(focalLength);
+    _pDisplay->setCursor(0, 35);
+    _pDisplay->print(flStr);
+  }
+  
+  // Show recording state
+  _pDisplay->setCursor(50, 35);
+  if (_recordingState) {
+    _pDisplay->print("REC");
+    
+    // Blinking REC dot
+    if (millis() % 1000 < 500) {
+      _pDisplay->fillCircle(45, 38, 3, SSD1306_WHITE);
+    }
+  } else {
+    _pDisplay->print("STBY");
+  }
+  
+  // Show timecode if available
+  _pDisplay->setCursor(0, 45);
+  _pDisplay->print("TC: ");
+  _pDisplay->print(_timecodeStr);
+  
+  // Show aperture if available
+  ParameterValue* iris = findParameter(BMD_CAT_LENS, BMD_PARAM_IRIS_NORM);
+  if (iris && iris->valid) {
+    _pDisplay->setCursor(0, 55);
+    _pDisplay->print("Iris: ");
+    
+    int16_t rawValue = (int16_t)(iris->data[0] | (iris->data[1] << 8));
+    float normalizedValue = (float)rawValue / 2048.0f;
+    _pDisplay->print(normalizedValue, 2);
+  }
 }
