@@ -10,6 +10,10 @@
 #include <Preferences.h>
 #include "BMDBLEConstants.h"
 
+// Forward declarations
+class BMDScanCallbacks;
+class BMDSecurityCallbacks;
+
 // Parameter value storage structure
 struct ParameterValue {
   uint8_t category;          // Parameter category
@@ -30,20 +34,18 @@ enum BMDConnectionState {
   BMD_STATE_CONNECTED
 };
 
-// Forward declaration of BLE callback classes
-class BLEAdvertisedDeviceCallbacks;
-class BLESecurityCallbacks;
-
 class BMDBLEController {
 public:
   // Constructor & initialization
   BMDBLEController(String deviceName = "ESP32BMDControl");
   ~BMDBLEController();
   void begin();
+  void loop(); // Must be called in Arduino loop()
   
   // Connection management
   bool scan(uint32_t duration = 10);
   bool connect();
+  bool reconnect();
   bool disconnect();
   bool isConnected();
   void clearBondingInfo();
@@ -77,13 +79,10 @@ public:
   void setTimecodeCallback(TimecodeCallback callback);
   void setPinRequestCallback(PinRequestCallback callback);
   
-  void loop(); // Must be called in Arduino loop()
-  
 private:
   // BLE connection handling
   bool setNotification(BLERemoteCharacteristic* pChar, bool enable, bool isIndication);
   void checkConnection();
-  bool reconnect();
   
   // Parameter storage and decoding
   ParameterValue* findParameter(uint8_t category, uint8_t parameterId);
@@ -122,8 +121,8 @@ private:
   BLERemoteCharacteristic* _pCameraStatus;
   BLERemoteCharacteristic* _pDeviceName;
   
-  BLEAdvertisedDeviceCallbacks* _pScanCallbacks;
-  BLESecurityCallbacks* _pSecurityCallbacks;
+  BMDScanCallbacks* _pScanCallbacks;
+  BMDSecurityCallbacks* _pSecurityCallbacks;
   
   // Parameter storage
   #define MAX_PARAMETERS 64
@@ -150,6 +149,10 @@ private:
   
   // Preferences for storing connection info
   Preferences _preferences;
+  
+  // Friend classes to access private members
+  friend class BMDScanCallbacks;
+  friend class BMDSecurityCallbacks;
 };
 
 #endif // BMD_BLE_CONTROLLER_H
