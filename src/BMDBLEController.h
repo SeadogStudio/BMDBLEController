@@ -31,8 +31,10 @@ enum BMDConnectionState {
 };
 
 // Forward declaration of callback classes
-class BMDAdvertisedDeviceCallbacks;
-class BMDSecurityCallbacks;
+#include <BLEAdvertisedDevice.h>
+#include <BLESecurityCallbacks.h>
+class BMDAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks;
+class BMDSecurityCallbacks : public BLESecurityCallbacks;
 
 class BMDBLEController {
 public:
