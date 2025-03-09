@@ -8,8 +8,6 @@
 #include <BLEAdvertisedDevice.h>
 #include <BLEClient.h>
 #include <Preferences.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include "BMDBLEConstants.h"
 
 // Parameter value storage structure
@@ -29,9 +27,9 @@ public:
   // Constructor & initialization
   BMDBLEController(String deviceName = "ESP32BMDControl");
   void begin();
-  void begin(Adafruit_SSD1306* display);
+  void loop();
   
-  // Connection management
+  // Connection methods
   bool scan(uint32_t duration = 10);
   bool connect();
   bool disconnect();
@@ -48,36 +46,41 @@ public:
   bool doAutoFocus();
   bool isRecording();
   
+  // Raw command methods
+  bool sendRawCommand(uint8_t* commandData, size_t length);
+  bool sendFormattedCommand(uint8_t category, uint8_t parameter, 
+                           uint8_t dataType, uint8_t operation,
+                           uint8_t* data, size_t dataLength);
+  
   // Parameter methods
   bool requestParameter(uint8_t category, uint8_t parameterId, uint8_t dataType);
-  String getParameterValue(uint8_t category, uint8_t parameterId);
   bool hasParameter(uint8_t category, uint8_t parameterId);
+  unsigned long getParameterTimestamp(uint8_t category, uint8_t parameterId);
   
-  // Display methods
-  void updateDisplay();
-  void setDisplayMode(uint8_t mode);
+  // Parameter access methods
+  String getParameterAsString(uint8_t category, uint8_t parameterId);
+  int32_t getParameterAsInt(uint8_t category, uint8_t parameterId);
+  float getParameterAsFloat(uint8_t category, uint8_t parameterId);
+  String getParameterAsHexString(uint8_t category, uint8_t parameterId);
+  bool getRawParameter(uint8_t category, uint8_t parameterId, uint8_t* buffer, size_t* bufferSize);
   
   // Event handling
   void setResponseCallback(void (*callback)(uint8_t, uint8_t, String));
-  void loop(); // Must be called in Arduino loop()
+  void setConnectionCallback(void (*callback)(bool));
   
+  // Public for testing/debugging (would normally be private)
+  bool _deviceFound;
+
 private:
   // BLE connection handling
   bool setNotification(BLERemoteCharacteristic* pChar, bool enable, bool isIndication);
-  void handleSpecialParameters(uint8_t category, uint8_t parameterId, String value);
-  void requestLensInfo();
+  String extractTextData(uint8_t* pData, size_t length, int offset);
   
   // Parameter storage
   ParameterValue* findParameter(uint8_t category, uint8_t parameterId);
   void storeParameter(uint8_t category, uint8_t parameterId, 
                      uint8_t dataType, uint8_t operation, uint8_t* data, size_t dataLength);
   String decodeParameterToString(ParameterValue* param);
-  
-  // Display helper methods
-  void displayBasicMode();
-  void displayFocusMode();
-  void displayRecordingMode();
-  void displayDebugMode();
   
   // Static callbacks
   static void notifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, 
@@ -100,19 +103,12 @@ private:
   void processTimecodePacket(uint8_t* pData, size_t length);
   void processStatusPacket(uint8_t* pData, size_t length);
   
-  // BLE callback classes
-  class BMDAdvertisedDeviceCallbacks;
-  class BMDSecurityCallbacks;
-  
   // Member variables
   String _deviceName;
   bool _connected;
-  bool _deviceFound;
   bool _scanInProgress;
   bool _autoReconnect;
-  bool _displayInitialized;
   bool _recordingState;
-  uint8_t _currentDisplayMode;
   
   BLEClient* _pClient;
   BLEAddress* _pServerAddress;
@@ -122,11 +118,6 @@ private:
   BLERemoteCharacteristic* _pTimecode;
   BLERemoteCharacteristic* _pCameraStatus;
   BLERemoteCharacteristic* _pDeviceName;
-  
-  BMDAdvertisedDeviceCallbacks* _pAdvertisedDeviceCallbacks;
-  BMDSecurityCallbacks* _pSecurityCallbacks;
-  
-  Adafruit_SSD1306* _pDisplay;
   
   // Parameter storage
   #define MAX_PARAMETERS 64
@@ -139,15 +130,43 @@ private:
   
   // Timing variables
   unsigned long _lastReconnectAttempt;
-  unsigned long _lastDisplayUpdate;
   const unsigned long RECONNECT_INTERVAL = 5000; // 5 seconds
-  const unsigned long DISPLAY_UPDATE_INTERVAL = 200; // 200ms
   
-  // Callback for parameter responses
+  // Callbacks
   void (*_responseCallback)(uint8_t, uint8_t, String);
+  void (*_connectionCallback)(bool);
   
   // Preferences for storing connection info
-  Preferences preferences;
+  Preferences _preferences;
+  
+  // Security callback class
+  class BMDSecurityCallbacks : public BLESecurityCallbacks {
+  public:
+    BMDSecurityCallbacks(BMDBLEController* controller) : _controller(controller) {}
+    
+    uint32_t onPassKeyRequest();
+    void onPassKeyNotify(uint32_t pass_key) {}
+    bool onConfirmPIN(uint32_t pin) { return true; }
+    bool onSecurityRequest() { return true; }
+    void onAuthenticationComplete(esp_ble_auth_cmpl_t auth_cmpl);
+    
+  private:
+    BMDBLEController* _controller;
+  };
+  
+  // BLE scan callback class
+  class BMDAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
+  public:
+    BMDAdvertisedDeviceCallbacks(BMDBLEController* controller) : _controller(controller) {}
+    
+    void onResult(BLEAdvertisedDevice advertisedDevice);
+    
+  private:
+    BMDBLEController* _controller;
+  };
+  
+  BMDSecurityCallbacks* _pSecurityCallbacks;
+  BMDAdvertisedDeviceCallbacks* _pAdvertisedDeviceCallbacks;
 };
 
 #endif // BMD_BLE_CONTROLLER_H
