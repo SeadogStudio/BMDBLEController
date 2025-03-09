@@ -1,4 +1,49 @@
-/**
+void processButtonPress() {
+  // Button action depends on the current state
+  if (!cameraController.isConnected()) {
+    // Try to connect if not connected
+    Serial.println("Button pressed - connecting");
+    cameraController.connect();
+  } else {
+    // Toggle focus control
+    focusControlEnabled = !focusControlEnabled;
+    Serial.print("Button pressed - focus control ");
+    Serial.println(focusControlEnabled ? "enabled" : "disabled");
+    
+    // Auto focus if disabling manual focus
+    if (!focusControlEnabled) {
+      cameraController.doAutoFocus();
+      Serial.println("Performing auto focus");
+    }
+  }
+}
+
+void handleFocusControl() {
+  // Read potentiometer value
+  int potValue = analogRead(POT_PIN);
+  
+  // Only update if changed significantly (to avoid jitter)
+  if (abs(potValue - lastPotValue) > 20 || 
+      (millis() - lastFocusUpdate) > FOCUS_UPDATE_INTERVAL) {
+    
+    // Map ADC value (0-4095) to focus range (0-2048)
+    uint16_t focusValue = map(potValue, 0, 4095, 0, 2048);
+    
+    // Set focus
+    cameraController.setFocus(focusValue);
+    
+    // Debug output
+    Serial.print("Setting focus to: ");
+    Serial.print(focusValue);
+    Serial.print(" (");
+    Serial.print((float)focusValue / 2048.0, 3);
+    Serial.println(" normalized)");
+    
+    // Update last values
+    lastPotValue = potValue;
+    lastFocusUpdate = millis();
+  }
+}/**
  * BMDBLEController - Focus Control Example
  * 
  * This example demonstrates how to use the BMDBLEController library
@@ -105,4 +150,18 @@ void loop() {
 
 void handleButton() {
   // Read button state with debounce
-  int reading = digitalRead(BUTTON_
+  int reading = digitalRead(BUTTON_PIN);
+  
+  if (reading != lastButtonState) {
+    lastDebounceTime = millis();
+  }
+  
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    // Button press detected
+    if (reading == LOW && lastButtonState == HIGH) {
+      processButtonPress();
+    }
+  }
+  
+  lastButtonState = reading;
+}
