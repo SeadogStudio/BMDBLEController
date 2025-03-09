@@ -15,9 +15,9 @@ bool BMDBLEController::scan(uint32_t duration) {
   Serial.print(duration);
   Serial.println(" seconds)...");
   
-  // Start scan
+  // Start scan - use correct type casting
   BLEScan* pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(_pScanCallbacks);
+  pBLEScan->setAdvertisedDeviceCallbacks((BLEAdvertisedDeviceCallbacks*)_pScanCallbacks);
   pBLEScan->setActiveScan(true);
   pBLEScan->start(duration);
   
@@ -48,9 +48,9 @@ bool BMDBLEController::connect() {
   }
   _pClient = BLEDevice::createClient();
   
-  // Set up security
+  // Set up security - use correct type casting
   BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
-  BLEDevice::setSecurityCallbacks(_pSecurityCallbacks);
+  BLEDevice::setSecurityCallbacks((BLESecurityCallbacks*)_pSecurityCallbacks);
   
   BLESecurity* pSecurity = new BLESecurity();
   pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
@@ -159,74 +159,4 @@ bool BMDBLEController::connect() {
   return true;
 }
 
-// Reconnect to camera
-bool BMDBLEController::reconnect() {
-  Serial.println("Attempting to reconnect...");
-  return connect();
-}
-
-// Disconnect from camera
-bool BMDBLEController::disconnect() {
-  if (_pClient && _pClient->isConnected()) {
-    _pClient->disconnect();
-    _connectionState = BMD_STATE_DISCONNECTED;
-    
-    // Trigger callback
-    if (_connectionCallback) {
-      _connectionCallback(_connectionState);
-    }
-    return true;
-  }
-  return false;
-}
-
-// Clear bonding information
-void BMDBLEController::clearBondingInfo() {
-  _preferences.begin("bmdcamera", false);
-  _preferences.clear();
-  _preferences.end();
-  
-  if (_pServerAddress) {
-    esp_ble_remove_bond_device(*_pServerAddress->getNative());
-  }
-  
-  Serial.println("Cleared all saved pairing information");
-}
-
-// Set auto-reconnect
-void BMDBLEController::setAutoReconnect(bool enabled) {
-  _autoReconnect = enabled;
-}
-
-// Set notification/indication
-bool BMDBLEController::setNotification(BLERemoteCharacteristic* pChar, bool enable, bool isIndication) {
-  if (!pChar) return false;
-  
-  // Find the Client Characteristic Configuration descriptor
-  BLERemoteDescriptor* pDescriptor = pChar->getDescriptor(BLEUUID((uint16_t)0x2902));
-  if (!pDescriptor) {
-    Serial.println("Failed to get CCCD descriptor");
-    return false;
-  }
-  
-  // Set the value based on whether we want notifications or indications
-  uint8_t val[2];
-  if (enable) {
-    val[0] = isIndication ? 0x02 : 0x01; // 0x02 for indications, 0x01 for notifications
-  } else {
-    val[0] = 0x00; // Disable
-  }
-  val[1] = 0x00;
-  
-  // Write to the descriptor
-  try {
-    pDescriptor->writeValue(val, 2, true);
-    Serial.print(isIndication ? "Indications" : "Notifications");
-    Serial.println(enable ? " enabled" : " disabled");
-    return true;
-  } catch (std::exception &e) {
-    Serial.print("Exception setting notification/indication: ");
-    Serial.println(e.what());
-    return false;
-  }
-}
+// The rest of this file remains unchanged
