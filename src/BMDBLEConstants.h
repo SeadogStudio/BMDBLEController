@@ -87,10 +87,4 @@
 #define BMD_OP_OFFSET 0x01
 #define BMD_OP_REPORT 0x02
 
-// Display modes
-#define BMD_DISPLAY_BASIC 0
-#define BMD_DISPLAY_FOCUS 1
-#define BMD_DISPLAY_RECORDING 2
-#define BMD_DISPLAY_DEBUG 3
-
 #endif // BMD_BLE_CONSTANTS_H
