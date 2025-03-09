@@ -30,11 +30,9 @@ enum BMDConnectionState {
   BMD_STATE_CONNECTED
 };
 
-// Forward declaration of callback classes
-#include <BLEAdvertisedDevice.h>
-#include <BLESecurityCallbacks.h>
-class BMDAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks;
-class BMDSecurityCallbacks : public BLESecurityCallbacks;
+// Forward declaration of BLE callback classes
+class BLEAdvertisedDeviceCallbacks;
+class BLESecurityCallbacks;
 
 class BMDBLEController {
 public:
@@ -124,8 +122,8 @@ private:
   BLERemoteCharacteristic* _pCameraStatus;
   BLERemoteCharacteristic* _pDeviceName;
   
-  BMDAdvertisedDeviceCallbacks* _pScanCallbacks;
-  BMDSecurityCallbacks* _pSecurityCallbacks;
+  BLEAdvertisedDeviceCallbacks* _pScanCallbacks;
+  BLESecurityCallbacks* _pSecurityCallbacks;
   
   // Parameter storage
   #define MAX_PARAMETERS 64
@@ -152,10 +150,6 @@ private:
   
   // Preferences for storing connection info
   Preferences _preferences;
-  
-  // BLE callback classes
-  friend class BMDAdvertisedDeviceCallbacks;
-  friend class BMDSecurityCallbacks;
 };
 
 #endif // BMD_BLE_CONTROLLER_H
