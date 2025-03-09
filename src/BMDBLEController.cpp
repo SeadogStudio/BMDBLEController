@@ -187,6 +187,7 @@ public:
 };
 
 // Constructor
+// Constructor
 BMDBLEController::BMDBLEController(String deviceName) :
   _deviceName(deviceName),
   _connectionState(BMD_STATE_DISCONNECTED),
@@ -223,27 +224,6 @@ BMDBLEController::BMDBLEController(String deviceName) :
   }
 }
 
-// Destructor
-BMDBLEController::~BMDBLEController() {
-  // Clean up
-  disconnect();
-  
-  if (_pScanCallbacks != nullptr) {
-    delete _pScanCallbacks;
-    _pScanCallbacks = nullptr;
-  }
-  
-  if (_pSecurityCallbacks != nullptr) {
-    delete _pSecurityCallbacks;
-    _pSecurityCallbacks = nullptr;
-  }
-  
-  if (_pServerAddress != nullptr) {
-    delete _pServerAddress;
-    _pServerAddress = nullptr;
-  }
-}
-
 // Initialize the controller
 void BMDBLEController::begin() {
   Serial.println("Initializing BMD BLE Controller");
@@ -252,8 +232,8 @@ void BMDBLEController::begin() {
   BLEDevice::init(_deviceName.c_str());
   BLEDevice::setPower(ESP_PWR_LVL_P9); // Maximum power
   
-  // Create callback objects
-  _pScanCallbacks = new BMDAdvertisedDeviceCallbacks(this);
+  // Create callback objects - use the new class names
+  _pScanCallbacks = new BMDScanCallbacks(this);
   _pSecurityCallbacks = new BMDSecurityCallbacks(this);
   
   // Check if we have previously connected to a camera
@@ -270,11 +250,6 @@ void BMDBLEController::begin() {
     _pServerAddress = new BLEAddress(savedAddress.c_str());
     _deviceFound = true;
   }
-}
-
-void BMDBLEController::loop() {
-  // Handle reconnection
-  checkConnection();
 }
 
 // Set parameter callback
