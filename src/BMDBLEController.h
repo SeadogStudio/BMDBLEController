@@ -8,6 +8,8 @@
 #include <BLEAdvertisedDevice.h>
 #include <BLEClient.h>
 #include <Preferences.h>
+#include <map>
+#include <tuple>
 
 class BMDBLEController {
 public:
@@ -26,22 +28,22 @@ public:
     void startScan(uint32_t duration = 10);
     void stopScan();
 
-    // Camera Control Commands (Examples - expand as needed)
+    // Camera Control Commands (Setters only - NO Getters for active fetching)
     bool setWhiteBalance(uint16_t kelvin, int16_t tint = 0);
     bool setISO(uint16_t iso);
-    bool setShutterAngle(uint16_t angle); // Or shutter speed, depending on camera
-    bool setNDFilter(uint8_t nd);        // If supported by the camera
+    bool setShutterAngle(uint16_t angle); // Or shutter speed
+    bool setNDFilter(uint8_t nd);
     bool startRecording();
     bool stopRecording();
-    bool getCameraStatus(); // Request camera status
 
+    // Getters (Accessors for last known values)
+    int16_t getCurrentWhiteBalance() const;
+    int16_t getCurrentTint() const; // Separate tint
+    int16_t getCurrentISO() const;
+    int16_t getCurrentShutterAngle() const;
+    // uint8_t getCurrentNDFilter() const; // If ND is a single byte
 
-        // Getters for discovered characteristics (optional, for advanced use)
-    BLERemoteCharacteristic* getOutgoingCameraControlCharacteristic() const;
-    BLERemoteCharacteristic* getCameraStatusCharacteristic() const;
-
-
-    // Callbacks
+    // Callbacks (as before, but emphasize onStatusNotify)
     void setStatusChangeCallback(void (*callback)(uint8_t status));
     void setDeviceFoundCallback(void (*callback)(const BLEAdvertisedDevice& device));
     void setConnectionStateChangeCallback(void (*callback)(bool connected));
@@ -67,6 +69,31 @@ public:
         // ... add more as needed
     };
 
+    // --- New: Data Types for Parameter Storage ---
+    struct VideoParams {
+        int16_t whiteBalance = -1; // Initialize to an "unknown" value
+        int16_t tint = -1;
+        int16_t iso = -1;
+        int16_t shutterAngle = -1;
+        // ... other video parameters ...
+    };
+
+    //TODO lens parameters
+    struct LensParams
+    {
+        //TODO: add lens parameters, example:
+        // float focus;
+        // float iris;
+    };
+
+    //TODO audio parameters
+    struct AudioParams
+    {
+        //TODO: add audio parameters, example:
+        // float gainCh1;
+        // float gainCh2;
+    };
+
 
 private:
     // --- Nested Security Callbacks Class ---
@@ -90,7 +117,9 @@ private:
     void saveBondingInformation();
 
     void onStatusNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
-    bool sendCommand(const std::vector<uint8_t>& command);  // Centralized command sending
+    bool sendCommand(const std::vector<uint8_t>& command);
+    // Add this new internal method:
+    void updateParameter(uint8_t category, uint8_t parameter, const uint8_t* data, size_t length);
 
     // --- Member Variables ---
     BLEClient* m_pClient = nullptr;
@@ -123,6 +152,11 @@ private:
     static constexpr const char* AUTHENTICATED_KEY = "authenticated";
     static constexpr const char* ADDRESS_KEY = "address";
     const String m_deviceName;
+
+    // --- New: Data Storage ---
+    std::map<uint8_t, VideoParams> m_videoParameters; // Map category to parameters
+    std::map<uint8_t, LensParams> m_lensParameters;    //TODO: Map for Lens parameters
+    std::map<uint8_t, AudioParams> m_audioParameters;   //TODO: Map for Audio parameters
 };
 
 #endif // BMDBLECONTROLLER_H
