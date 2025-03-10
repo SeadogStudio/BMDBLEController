@@ -1,288 +1,125 @@
-#include "BMDBLEController.h"
+#ifndef BMDBLECONTROLLER_H
+#define BMDBLECONTROLLER_H
 
-// Static instance for callbacks
-BMDBLEController* BMDBLEController::_instance = nullptr;
+#include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
+#include <BLEClient.h>
+#include <Preferences.h>
 
-// Constructor
-BMDBLEController::BMDBLEController(String deviceName) :
-  _deviceName(deviceName),
-  _connectionState(BMD_STATE_DISCONNECTED),
-  _deviceFound(false),
-  _autoReconnect(true),
-  _recordingState(false),
-  _cameraStatus(0),
-  _pClient(nullptr),
-  _pServerAddress(nullptr),
-  _pRemoteService(nullptr),
-  _pOutgoingCameraControl(nullptr),
-  _pIncomingCameraControl(nullptr),
-  _pTimecode(nullptr),
-  _pCameraStatus(nullptr),
-  _pDeviceName(nullptr),
-  _pScanCallbacks(nullptr),
-  _pSecurityCallbacks(nullptr),
-  _paramCount(0),
-  _timecodeHours(0),
-  _timecodeMinutes(0),
-  _timecodeSeconds(0),
-  _timecodeFrames(0),
-  _lastReconnectAttempt(0),
-  _parameterCallback(nullptr),
-  _connectionCallback(nullptr),
-  _timecodeCallback(nullptr),
-  _pinRequestCallback(nullptr)
-{
-  _instance = this;
-  
-  // Clear parameter storage
-  for (int i = 0; i < MAX_PARAMETERS; i++) {
-    _parameters[i].valid = false;
-  }
-}
+class BMDBLEController {
+public:
+  // Constructor and Destructor
+  BMDBLEController(const String& deviceName = "ESP32-BMDControl");
+  ~BMDBLEController();
 
-// Destructor
-BMDBLEController::~BMDBLEController() {
-  // Clean up
-  disconnect();
-  
-  if (_pScanCallbacks != nullptr) {
-    delete _pScanCallbacks;
-    _pScanCallbacks = nullptr;
-  }
-  
-  if (_pSecurityCallbacks != nullptr) {
-    delete _pSecurityCallbacks;
-    _pSecurityCallbacks = nullptr;
-  }
-  
-  if (_pServerAddress != nullptr) {
-    delete _pServerAddress;
-    _pServerAddress = nullptr;
-  }
-}
+  // Connection Management
+  bool connect();
+  bool connect(const BLEAddress& address);
+  void disconnect();
+  bool isConnected() const;
+  bool isBonded() const;
 
-// Initialize the controller
-void BMDBLEController::begin() {
-  Serial.println("Initializing BMD BLE Controller");
-  
-  // Initialize BLE
-  BLEDevice::init(_deviceName.c_str());
-  BLEDevice::setPower(ESP_PWR_LVL_P9); // Maximum power
-  
-  // Create callback objects
-  _pScanCallbacks = new BMDScanCallbacks(this);
-  _pSecurityCallbacks = new BMDSecurityCallbacks(this);
-  
-  // Check if we have previously connected to a camera
-  _preferences.begin("bmdcamera", false);
-  bool authenticated = _preferences.getBool("authenticated", false);
-  String savedAddress = _preferences.getString("address", "");
-  _preferences.end();
-  
-  if (authenticated && savedAddress.length() > 0) {
-    Serial.println("Found saved camera connection");
-    Serial.print("Saved address: ");
-    Serial.println(savedAddress);
-    
-    _pServerAddress = new BLEAddress(savedAddress.c_str());
-    _deviceFound = true;
-  }
-}
+  // Scanning
+  void startScan(uint32_t duration = 10);
+  void stopScan();
 
-void BMDBLEController::loop() {
-  // Handle reconnection
-  checkConnection();
-}
+  // Camera Control Commands (Examples - expand as needed)
+  bool setWhiteBalance(uint16_t kelvin, int16_t tint = 0);
+  bool setISO(uint16_t iso);
+  bool setShutterAngle(uint16_t angle); // Or shutter speed, depending on camera
+  bool setNDFilter(uint8_t nd);        // If supported by the camera
+  bool startRecording();
+  bool stopRecording();
+  bool getCameraStatus(); // Request camera status
 
-// Set parameter callback
-void BMDBLEController::setParameterCallback(ParameterCallback callback) {
-  _parameterCallback = callback;
-}
+    // Getters for discovered characteristics (optional, for advanced use)
+  BLERemoteCharacteristic* getOutgoingCameraControlCharacteristic() const;
+  BLERemoteCharacteristic* getCameraStatusCharacteristic() const;
 
-// Set connection callback
-void BMDBLEController::setConnectionCallback(ConnectionCallback callback) {
-  _connectionCallback = callback;
-}
+  // Callbacks
+  void setStatusChangeCallback(void (*callback)(uint8_t status));
+  void setDeviceFoundCallback(void (*callback)(const BLEAdvertisedDevice& device));
+  void setConnectionStateChangeCallback(void (*callback)(bool connected));
+  void setPinRequestCallback(uint32_t (*callback)());
 
-// Set timecode callback
-void BMDBLEController::setTimecodeCallback(TimecodeCallback callback) {
-  _timecodeCallback = callback;
-}
+  // Utility Functions
+  void clearBondingInformation();
+  static String errorCodeToString(int16_t errorCode);
 
-// Set PIN request callback
-void BMDBLEController::setPinRequestCallback(PinRequestCallback callback) {
-  _pinRequestCallback = callback;
-}
+  // --- Error Codes ---
+  enum ErrorCode : int16_t {
+    ERR_NONE = 0,
+    ERR_NOT_CONNECTED = -1,
+    ERR_CHARACTERISTIC_NOT_FOUND = -2,
+    ERR_COMMAND_FAILED = -3,
+    ERR_INVALID_PARAMETER = -4,
+    ERR_SCAN_FAILED = -5,
+    ERR_CONNECTION_FAILED = -6,
+    ERR_SERVICE_NOT_FOUND = -7,
+    ERR_ALREADY_CONNECTED = -8,
+    ERR_ALREADY_SCANNING = -9,
+    ERR_NO_BONDED_DEVICE = -10,
+    // ... add more as needed
+  };
 
-// Get connection state
-BMDConnectionState BMDBLEController::getConnectionState() {
-  return _connectionState;
-}
+private:
+  // --- Nested Security Callbacks Class ---
+  class MySecurityCallbacks : public BLESecurityCallbacks {
+  public:
+    MySecurityCallbacks(BMDBLEController& parent) : _parent(parent) {}
 
-// Check if connected
-bool BMDBLEController::isConnected() {
-  if (_pClient && _pClient->isConnected()) {
-    return true;
-  }
-  return false;
-}
+    uint32_t onPassKeyRequest() override;
+    void onPassKeyNotify(uint32_t pass_key) override;
+    bool onConfirmPIN(uint32_t pin) override;
+    bool onSecurityRequest() override;
+    void onAuthenticationComplete(esp_ble_auth_cmpl_t auth_cmpl) override;
 
-// Check if recording
-bool BMDBLEController::isRecording() {
-  return _recordingState;
-}
+  private:
+    BMDBLEController& _parent;
+  };
 
-// Parameter storage and retrieval
+  // --- Internal Methods ---
+  bool connectToServer();
+  void loadBondingInformation();
+  void saveBondingInformation();
+  void onStatusNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+  bool sendCommand(const std::vector<uint8_t>& command);  // Centralized command sending
 
-// Find parameter in storage
-ParameterValue* BMDBLEController::findParameter(uint8_t category, uint8_t parameterId) {
-  for (int i = 0; i < MAX_PARAMETERS; i++) {
-    if (_parameters[i].valid && 
-        _parameters[i].category == category && 
-        _parameters[i].parameterId == parameterId) {
-      return &_parameters[i];
-    }
-  }
-  return nullptr;
-}
+  // --- Member Variables ---
+  BLEClient* m_pClient = nullptr;
+  BLEScan* m_pBLEScan = nullptr;
+  BLEAddress* m_pServerAddress = nullptr;
+  BLERemoteCharacteristic* m_pOutgoingCameraControl = nullptr;
+  BLERemoteCharacteristic* m_pCameraStatus = nullptr;
+  BLERemoteCharacteristic* m_pDeviceName = nullptr;
+    // ... other characteristics ...
+  bool m_deviceFound = false;
+  bool m_connected = false;
+  bool m_bonded = false;
+  bool m_scanning = false;
 
-// Store parameter
-void BMDBLEController::storeParameter(uint8_t category, uint8_t parameterId, 
-                                     uint8_t dataType, uint8_t operation, 
-                                     uint8_t* data, size_t dataLength) {
-  // Check if parameter already exists
-  ParameterValue* param = findParameter(category, parameterId);
-  
-  // If not found, find an empty slot
-  if (param == nullptr) {
-    for (int i = 0; i < MAX_PARAMETERS; i++) {
-      if (!_parameters[i].valid) {
-        param = &_parameters[i];
-        _paramCount++;
-        break;
-      }
-    }
-  }
-  
-  // If still not found, storage is full
-  if (param == nullptr) {
-    Serial.println("Parameter storage full!");
-    return;
-  }
-  
-  // Store parameter data
-  param->category = category;
-  param->parameterId = parameterId;
-  param->dataType = dataType;
-  param->operation = operation;
-  param->dataLength = (dataLength > 64) ? 64 : dataLength;
-  param->timestamp = millis();
-  param->valid = true;
-  
-  // Copy data
-  if (data != nullptr) {
-    memcpy(param->data, data, param->dataLength);
-  } else {
-    param->dataLength = 0;
-  }
-  
-  // Call callback if registered
-  if (_parameterCallback) {
-    _parameterCallback(category, parameterId, data, dataLength);
-  }
-}
+  Preferences m_preferences;
+  MySecurityCallbacks m_securityCallbacks;
 
-// Check if parameter exists
-bool BMDBLEController::hasParameter(uint8_t category, uint8_t parameterId) {
-  return (findParameter(category, parameterId) != nullptr);
-}
+  // Callbacks
+  void (*m_statusChangeCallback)(uint8_t status) = nullptr;
+  void (*m_deviceFoundCallback)(const BLEAdvertisedDevice& device) = nullptr;
+  void (*m_connectionStateChangeCallback)(bool connected) = nullptr;
+  uint32_t (*m_pinRequestCallback)() = nullptr;
 
-// Get parameter
-ParameterValue* BMDBLEController::getParameter(uint8_t category, uint8_t parameterId) {
-  return findParameter(category, parameterId);
-}
+  // --- Constants ---
+  static const BLEUUID SERVICE_UUID;
+  static const BLEUUID OUTGOING_CAMERA_CONTROL_UUID;
+  static const BLEUUID INCOMING_CAMERA_CONTROL_UUID;
+  static const BLEUUID CAMERA_STATUS_UUID;
+  static const BLEUUID DEVICE_NAME_UUID;
+  static constexpr const char* PREFERENCES_NAMESPACE = "bmd-camera";
+  static constexpr const char* AUTHENTICATED_KEY = "authenticated";
+  static constexpr const char* ADDRESS_KEY = "address";
+  const String m_deviceName;
+};
 
-// Process incoming control packet
-void BMDBLEController::processIncomingPacket(uint8_t* pData, size_t length) {
-  // Verify packet is long enough
-  if (length < 8) {
-    Serial.println("Invalid packet: too short");
-    return;
-  }
-  
-  // Parse packet structure
-  uint8_t protocolId = pData[0];
-  uint8_t packetLength = pData[1];
-  uint8_t commandId = pData[2];
-  uint8_t reserved = pData[3];
-  uint8_t category = pData[4];
-  uint8_t parameterId = pData[5];
-  uint8_t dataType = pData[6];
-  uint8_t operation = pData[7];
-  
-  // Special handling for recording state
-  if (category == BMD_CAT_TRANSPORT && parameterId == BMD_PARAM_TRANSPORT_MODE) {
-    if (length > 8) {
-      bool newRecordingState = (pData[8] == 2);
-      if (newRecordingState != _recordingState) {
-        _recordingState = newRecordingState;
-        Serial.print("Recording state changed: ");
-        Serial.println(_recordingState ? "RECORDING" : "STOPPED");
-      }
-    }
-  }
-  
-  // Store parameter data
-  if (length > 8) {
-    storeParameter(category, parameterId, dataType, operation, &pData[8], length - 8);
-  } else {
-    storeParameter(category, parameterId, dataType, operation, nullptr, 0);
-  }
-}
-
-// Process timecode packet
-void BMDBLEController::processTimecodePacket(uint8_t* pData, size_t length) {
-  if (length >= 4) {
-    // Blackmagic timecode format is BCD
-    _timecodeFrames = (pData[0] >> 4) * 10 + (pData[0] & 0x0F);
-    _timecodeSeconds = (pData[1] >> 4) * 10 + (pData[1] & 0x0F);
-    _timecodeMinutes = (pData[2] >> 4) * 10 + (pData[2] & 0x0F);
-    _timecodeHours = (pData[3] >> 4) * 10 + (pData[3] & 0x0F);
-    
-    // Call callback if registered
-    if (_timecodeCallback) {
-      _timecodeCallback(_timecodeHours, _timecodeMinutes, _timecodeSeconds, _timecodeFrames);
-    }
-  }
-}
-
-// Process status packet
-void BMDBLEController::processStatusPacket(uint8_t* pData, size_t length) {
-  if (length > 0) {
-    _cameraStatus = pData[0];
-    Serial.print("Camera status updated: 0x");
-    Serial.println(_cameraStatus, HEX);
-  }
-}
-
-// Static callback functions
-void BMDBLEController::controlNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, 
-                                          uint8_t* pData, size_t length, bool isNotify) {
-  if (_instance) {
-    _instance->processIncomingPacket(pData, length);
-  }
-}
-
-void BMDBLEController::timecodeNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, 
-                                           uint8_t* pData, size_t length, bool isNotify) {
-  if (_instance) {
-    _instance->processTimecodePacket(pData, length);
-  }
-}
-
-void BMDBLEController::statusNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, 
-                                         uint8_t* pData, size_t length, bool isNotify) {
-  if (_instance) {
-    _instance->processStatusPacket(pData, length);
-  }
-}
+#endif // BMDBLECONTROLLER_H
