@@ -88,7 +88,6 @@ void BMDBLEController::startScan(uint32_t duration) {
             Serial.print(" Address: ");
             Serial.println(advertisedDevice.getAddress().toString().c_str());
 
-
             if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(SERVICE_UUID)) {
                 Serial.println("Found a Blackmagic camera!");
                 stopScan(); // Stop scan immediately
@@ -336,51 +335,69 @@ bool BMDBLEController::setWhiteBalance(uint16_t kelvin, int16_t tint) {
 }
 
 bool BMDBLEController::setISO(uint16_t iso) {
-    //TODO: Implement based on Blackmagic Camera Control Protocol
+    // TODO: Implement based on Blackmagic Camera Control Protocol
+    // You'll need to construct the correct command byte array here.
     std::vector<uint8_t> command = { /* ... command bytes ... */ };
     return sendCommand(command);
 }
 
 bool BMDBLEController::setShutterAngle(uint16_t angle) {
-    //TODO: Implement based on Blackmagic Camera Control Protocol
+    // TODO: Implement based on Blackmagic Camera Control Protocol
     std::vector<uint8_t> command = { /* ... command bytes ... */ };
     return sendCommand(command);
 }
 bool BMDBLEController::setNDFilter(uint8_t nd) {
-    //TODO: Implement based on Blackmagic Camera Control Protocol
+    // TODO: Implement based on Blackmagic Camera Control Protocol
     std::vector<uint8_t> command = { /* ... command bytes ... */ };
     return sendCommand(command);
 }
 
 bool BMDBLEController::startRecording()
 {
-    //TODO: Implement based on Blackmagic Camera Control Protocol
+    // TODO: Implement based on Blackmagic Camera Control Protocol
     std::vector<uint8_t> command = { /* ... command bytes ... */ };
     return sendCommand(command);
 }
 
 bool BMDBLEController::stopRecording()
 {
-    //TODO: Implement based on Blackmagic Camera Control Protocol
+    // TODO: Implement based on Blackmagic Camera Control Protocol
     std::vector<uint8_t> command = { /* ... command bytes ... */ };
     return sendCommand(command);
 }
 
-bool BMDBLEController::getCameraStatus()
+// --- Getters (Accessors) ---
+
+int16_t BMDBLEController::getCurrentWhiteBalance() const {
+    auto categoryIt = m_videoParameters.find(1); // Assuming 1 is Video
+    if (categoryIt != m_videoParameters.end()) {
+        return categoryIt->second.whiteBalance;
+    }
+    return -1; // Or another appropriate "unknown" value.
+}
+
+int16_t BMDBLEController::getCurrentTint() const
 {
-    //TODO: Implement based on Blackmagic Camera Control Protocol.  This may not be needed if status notifications are working.
-    std::vector<uint8_t> command = { /* ... command bytes ... */ };
-    return sendCommand(command);
+    auto categoryIt = m_videoParameters.find(1); // Assuming 1 is Video
+    if (categoryIt != m_videoParameters.end()) {
+        return categoryIt->second.tint;
+    }
+    return -1; // Or another appropriate "unknown" value.
 }
 
-// --- Getters for Characteristics ---
-
-BLERemoteCharacteristic* BMDBLEController::getOutgoingCameraControlCharacteristic() const {
-    return m_pOutgoingCameraControl;
+int16_t BMDBLEController::getCurrentISO() const {
+    auto categoryIt = m_videoParameters.find(1);  // Assuming Video category is 1
+    if (categoryIt != m_videoParameters.end()) {
+        return categoryIt->second.iso;
+    }
+    return -1; // Or another "unknown" value
 }
-
-BLERemoteCharacteristic* BMDBLEController::getCameraStatusCharacteristic() const {
-    return m_pCameraStatus;
+int16_t BMDBLEController::getCurrentShutterAngle() const {
+    auto categoryIt = m_videoParameters.find(1); // Assuming Video category is 1
+    if (categoryIt != m_videoParameters.end()) {
+        return categoryIt->second.shutterAngle;
+    }
+    return -1; // or another suitable default/error value
 }
 
 // --- Callback Management ---
@@ -399,12 +416,94 @@ void BMDBLEController::setPinRequestCallback(uint32_t (*callback)())
 {
     m_pinRequestCallback = callback;
 }
+
 // --- Status Notification Handler ---
+
 void BMDBLEController::onStatusNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
     if (length > 0 && m_statusChangeCallback) {
-        m_statusChangeCallback(pData[0]); // Pass the status byte to the callback.
+        m_statusChangeCallback(pData[0]); // General status callback
+    }
+
+    //  IMPORTANT: Parse the incoming data and update the stored parameters.
+    if (length > 3) { //At least 1 byte for category, 1 for parameter, and some data
+        uint8_t category = pData[1]; // Assuming category is at index 1 of the notify data
+        uint8_t parameter = pData[2]; // Assuming parameter ID is at index 2
+        // Data starts at index 3
+        updateParameter(category, parameter, &pData[3], length - 3);
+    }
+    else{
+        Serial.println("Received notification data too short to parse.");
     }
 }
+
+// --- updateParameter (Handles updating the correct parameter) ---
+
+void BMDBLEController::updateParameter(uint8_t category, uint8_t parameter, const uint8_t* data, size_t length) {
+    // Video Parameters
+    if (category == 1) { // Assuming 1 is the Video category
+        // Get a reference to the parameter struct, create if it doesn't exist
+        if (m_videoParameters.find(category) == m_videoParameters.end()) {
+            m_videoParameters[category] = VideoParams(); // Initialize with defaults
+        }
+        VideoParams& params = m_videoParameters[category];
+        switch (parameter) {
+            case 2: // Manual White Balance
+                if (length >= 4) { // Expecting 2 bytes for WB, 2 for tint
+                    params.whiteBalance = static_cast<int16_t>((data[1] << 8) | data[0]);
+                    params.tint = static_cast<int16_t>((data[3] << 8) | data[2]);
+                }
+                break;
+            case 3: // ISO (Example - adjust parameter ID as needed)
+                if (length >= 2) { // Example: Assuming ISO is a 16-bit value
+                    params.iso = static_cast<int16_t>((data[1] << 8) | data[0]);
+                }
+                break;
+            case 4: // Shutter Angle (Example)
+                if (length >= 2) {
+                    params.shutterAngle = static_cast<int16_t>((data[1] << 8) | data[0]);
+                }
+                break;
+            // TODO: Add cases for other video parameters ...
+            default:
+                Serial.print("Unknown Video parameter ID: ");
+                Serial.println(parameter);
+                break;
+        }
+    }
+    // TODO: Add else if blocks for other categories (Lens, Audio, etc.)
+    // Example structure for Lens (Category 2):
+    else if (category == 2) { // Assuming 2 is Lens
+        if (m_lensParameters.find(category) == m_lensParameters.end()) {
+            m_lensParameters[category] = LensParams();
+        }
+        LensParams& params = m_lensParameters[category];
+        switch(parameter){
+            // TODO add cases for lens parameters
+            default:
+                Serial.print("Unknown Lens parameter ID: ");
+                Serial.println(parameter);
+            break;
+        }
+    }
+    else if (category == 3) {// Assuming 3 is Audio
+     if (m_audioParameters.find(category) == m_audioParameters.end()) {
+            m_audioParameters[category] = AudioParams();
+        }
+        AudioParams& params = m_audioParameters[category];
+        switch(parameter){
+            // TODO add cases for audio parameters
+            default:
+                Serial.print("Unknown Audio parameter ID: ");
+                Serial.println(parameter);
+            break;
+        }
+    }
+    else {
+        Serial.print("Unknown category: ");
+        Serial.println(category);
+    }
+}
+
 
 // --- Utility Functions ---
 
