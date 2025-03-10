@@ -1,5 +1,5 @@
-#ifndef BMD_BLE_CONTROLLER_H
-#define BMD_BLE_CONTROLLER_H
+#ifndef BMDBLECONTROLLER_H
+#define BMDBLECONTROLLER_H
 
 #include <Arduino.h>
 #include <BLEDevice.h>
@@ -8,261 +8,118 @@
 #include <BLEAdvertisedDevice.h>
 #include <BLEClient.h>
 #include <Preferences.h>
-#include "BMDBLEConstants.h"
-
-// Forward declarations
-class BMDScanCallbacks;
-class BMDSecurityCallbacks;
-
-// Connection states
-enum BMDConnectionState {
-  BMD_STATE_DISCONNECTED,
-  BMD_STATE_SCANNING,
-  BMD_STATE_CONNECTING,
-  BMD_STATE_CONNECTED
-};
-
-// Parameter value structure
-struct ParameterValue {
-  bool valid;
-  uint8_t category;
-  uint8_t parameterId;
-  uint8_t dataType;
-  uint8_t operation;
-  uint8_t data[64];
-  size_t dataLength;
-  unsigned long timestamp;
-};
-
-// Callback type definitions
-typedef void (*ParameterCallback)(uint8_t category, uint8_t parameterId, uint8_t* data, size_t length);
-typedef void (*ConnectionCallback)(BMDConnectionState state);
-typedef void (*TimecodeCallback)(uint8_t hours, uint8_t minutes, uint8_t seconds, uint8_t frames);
-typedef void (*PinRequestCallback)(uint32_t* pinCode);
-
-// Maximum number of parameters to store
-#define MAX_PARAMETERS 32
-
-// Reconnection interval
-#define RECONNECT_INTERVAL 5000 // 5 seconds
 
 class BMDBLEController {
-  friend class BMDScanCallbacks;
-  friend class BMDSecurityCallbacks;
-  
-private:
-  // Static instance for callbacks
-  static BMDBLEController* _instance;
-  
-  // Connection variables
-  String _deviceName;
-  BMDConnectionState _connectionState;
-  bool _deviceFound;
-  bool _autoReconnect;
-  bool _recordingState;
-  uint8_t _cameraStatus;
-  
-  // BLE objects
-  BLEClient* _pClient;
-  BLEAddress* _pServerAddress;
-  BLERemoteService* _pRemoteService;
-  BLERemoteCharacteristic* _pOutgoingCameraControl;
-  BLERemoteCharacteristic* _pIncomingCameraControl;
-  BLERemoteCharacteristic* _pTimecode;
-  BLERemoteCharacteristic* _pCameraStatus;
-  BLERemoteCharacteristic* _pDeviceName;
-  
-  // Callback objects
-  BMDScanCallbacks* _pScanCallbacks;
-  BMDSecurityCallbacks* _pSecurityCallbacks;
-  
-  // Parameter storage
-  ParameterValue _parameters[MAX_PARAMETERS];
-  int _paramCount;
-  
-  // Timecode data
-  uint8_t _timecodeHours;
-  uint8_t _timecodeMinutes;
-  uint8_t _timecodeSeconds;
-  uint8_t _timecodeFrames;
-  
-  // Reconnection tracking
-  unsigned long _lastReconnectAttempt;
-  
-  // Preferences for storage
-  Preferences _preferences;
-  
-  // Callback functions
-  ParameterCallback _parameterCallback;
-  ConnectionCallback _connectionCallback;
-  TimecodeCallback _timecodeCallback;
-  PinRequestCallback _pinRequestCallback;
-  
-  // Private methods
-  ParameterValue* findParameter(uint8_t category, uint8_t parameterId);
-  void storeParameter(uint8_t category, uint8_t parameterId, uint8_t dataType, uint8_t operation, uint8_t* data, size_t dataLength);
-  bool setNotification(BLERemoteCharacteristic* pChar, bool enable, bool isIndication);
-  
-  // Packet processing methods
-  void processIncomingPacket(uint8_t* pData, size_t length);
-  void processTimecodePacket(uint8_t* pData, size_t length);
-  void processStatusPacket(uint8_t* pData, size_t length);
-  
-  // Static callback functions
-  static void controlNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
-  static void timecodeNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
-  static void statusNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
-  
 public:
-  // Constructor and destructor
-  BMDBLEController(String deviceName = "ESP32BMDController");
+  // Constructor and Destructor
+  BMDBLEController(const String& deviceName = "ESP32-BMDControl");
   ~BMDBLEController();
-  
-  // Initialization
-  void begin();
-  void loop();
-  
-  // Connection management
-  bool scan(uint32_t duration = 10);
+
+  // Connection Management
   bool connect();
-  bool reconnect();
-  bool disconnect();
-  void clearBondingInfo();
-  void setAutoReconnect(bool enabled);
-  void checkConnection();
-  
-  // Camera commands
-  bool setFocus(uint16_t rawValue);
-  bool setFocus(float normalizedValue);
-  bool setIris(float normalizedValue);
-  bool setWhiteBalance(uint16_t kelvin);
-  bool doAutoFocus();
-  bool toggleRecording();
+  bool connect(const BLEAddress& address);
+  void disconnect();
+  bool isConnected() const;
+  bool isBonded() const;
+
+  // Scanning
+  void startScan(uint32_t duration = 10);
+  void stopScan();
+
+  // Camera Control Commands (Examples - expand as needed)
+  bool setWhiteBalance(uint16_t kelvin, int16_t tint = 0);
+  bool setISO(uint16_t iso);
+  bool setShutterAngle(uint16_t angle); // Or shutter speed, depending on camera
+  bool setNDFilter(uint8_t nd);        // If supported by the camera
   bool startRecording();
   bool stopRecording();
-  bool requestParameter(uint8_t category, uint8_t parameterId, uint8_t dataType);
-  
-  // Callback registration
-  void setParameterCallback(ParameterCallback callback);
-  void setConnectionCallback(ConnectionCallback callback);
-  void setTimecodeCallback(TimecodeCallback callback);
-  void setPinRequestCallback(PinRequestCallback callback);
-  
-  // State getters
-  BMDConnectionState getConnectionState();
-  bool isConnected();
-  bool isRecording();
-  
-  // Parameter access
-  bool hasParameter(uint8_t category, uint8_t parameterId);
-  ParameterValue* getParameter(uint8_t category, uint8_t parameterId);
-};
+  bool getCameraStatus(); // Request camera status
 
-// Advertised device callbacks class
-class BMDScanCallbacks: public BLEAdvertisedDeviceCallbacks {
+    // Getters for discovered characteristics (optional, for advanced use)
+  BLERemoteCharacteristic* getOutgoingCameraControlCharacteristic() const;
+  BLERemoteCharacteristic* getCameraStatusCharacteristic() const;
+
+  // Callbacks
+  void setStatusChangeCallback(void (*callback)(uint8_t status));
+  void setDeviceFoundCallback(void (*callback)(const BLEAdvertisedDevice& device));
+  void setConnectionStateChangeCallback(void (*callback)(bool connected));
+  void setPinRequestCallback(uint32_t (*callback)());
+
+  // Utility Functions
+  void clearBondingInformation();
+  static String errorCodeToString(int16_t errorCode);
+
+  // --- Error Codes ---
+  enum ErrorCode : int16_t {
+    ERR_NONE = 0,
+    ERR_NOT_CONNECTED = -1,
+    ERR_CHARACTERISTIC_NOT_FOUND = -2,
+    ERR_COMMAND_FAILED = -3,
+    ERR_INVALID_PARAMETER = -4,
+    ERR_SCAN_FAILED = -5,
+    ERR_CONNECTION_FAILED = -6,
+    ERR_SERVICE_NOT_FOUND = -7,
+    ERR_ALREADY_CONNECTED = -8,
+    ERR_ALREADY_SCANNING = -9,
+    ERR_NO_BONDED_DEVICE = -10,
+    // ... add more as needed
+  };
+
 private:
-  BMDBLEController* _controller;
-  
-public:
-  BMDScanCallbacks(BMDBLEController* controller) : _controller(controller) {}
-  
-  void onResult(BLEAdvertisedDevice advertisedDevice) {
-    Serial.print("Device found: ");
-    Serial.println(advertisedDevice.toString().c_str());
-    
-    // Check for Blackmagic camera service UUID
-    if (advertisedDevice.haveServiceUUID() && 
-        advertisedDevice.isAdvertisingService(BLEUUID(BMD_SERVICE_UUID))) {
-      
-      Serial.println("Found a Blackmagic Design camera!");
-      advertisedDevice.getScan()->stop();
-      
-      // Save the device address
-      if (_controller->_pServerAddress != nullptr) {
-        delete _controller->_pServerAddress;
-      }
-      _controller->_pServerAddress = new BLEAddress(advertisedDevice.getAddress());
-      _controller->_deviceFound = true;
-      
-      // Trigger connection state callback
-      if (_controller->_connectionCallback) {
-        _controller->_connectionCallback(BMD_STATE_SCANNING);
-      }
-    }
-  }
+  // --- Nested Security Callbacks Class ---
+  class MySecurityCallbacks : public BLESecurityCallbacks {
+  public:
+    MySecurityCallbacks(BMDBLEController& parent) : _parent(parent) {}
+
+    uint32_t onPassKeyRequest() override;
+    void onPassKeyNotify(uint32_t pass_key) override;
+    bool onConfirmPIN(uint32_t pin) override;
+    bool onSecurityRequest() override;
+    void onAuthenticationComplete(esp_ble_auth_cmpl_t auth_cmpl) override;
+
+  private:
+    BMDBLEController& _parent;
+  };
+
+  // --- Internal Methods ---
+  bool connectToServer();
+  void loadBondingInformation();
+  void saveBondingInformation();
+  void onStatusNotify(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+  bool sendCommand(const std::vector<uint8_t>& command);  // Centralized command sending
+
+  // --- Member Variables ---
+  BLEClient* m_pClient = nullptr;
+  BLEScan* m_pBLEScan = nullptr;
+  BLEAddress* m_pServerAddress = nullptr;
+  BLERemoteCharacteristic* m_pOutgoingCameraControl = nullptr;
+  BLERemoteCharacteristic* m_pCameraStatus = nullptr;
+  BLERemoteCharacteristic* m_pDeviceName = nullptr;
+    // ... other characteristics ...
+  bool m_deviceFound = false;
+  bool m_connected = false;
+  bool m_bonded = false;
+  bool m_scanning = false;
+
+  Preferences m_preferences;
+  MySecurityCallbacks m_securityCallbacks;
+
+  // Callbacks
+  void (*m_statusChangeCallback)(uint8_t status) = nullptr;
+  void (*m_deviceFoundCallback)(const BLEAdvertisedDevice& device) = nullptr;
+  void (*m_connectionStateChangeCallback)(bool connected) = nullptr;
+  uint32_t (*m_pinRequestCallback)() = nullptr;
+
+  // --- Constants ---
+  static const BLEUUID SERVICE_UUID;
+  static const BLEUUID OUTGOING_CAMERA_CONTROL_UUID;
+  static const BLEUUID INCOMING_CAMERA_CONTROL_UUID;
+  static const BLEUUID CAMERA_STATUS_UUID;
+  static const BLEUUID DEVICE_NAME_UUID;
+  static constexpr const char* PREFERENCES_NAMESPACE = "bmd-camera";
+  static constexpr const char* AUTHENTICATED_KEY = "authenticated";
+  static constexpr const char* ADDRESS_KEY = "address";
+  const String m_deviceName;
 };
 
-// Security callbacks class
-class BMDSecurityCallbacks: public BLESecurityCallbacks {
-private:
-  BMDBLEController* _controller;
-  
-public:
-  BMDSecurityCallbacks(BMDBLEController* controller) : _controller(controller) {}
-  
-  uint32_t onPassKeyRequest() {
-    Serial.println("PIN code requested for pairing");
-    
-    uint32_t pinCode = 123456; // Default PIN code
-    
-    // Call user callback if set
-    if (_controller->_pinRequestCallback) {
-      _controller->_pinRequestCallback(&pinCode);
-    } else {
-      Serial.println("---> PLEASE ENTER 6 DIGIT PIN (default: 123456): ");
-      
-      char input[7] = {0};
-      int inputPos = 0;
-      
-      // Wait for PIN input
-      while (inputPos < 6) {
-        if (Serial.available()) {
-          char c = Serial.read();
-          if (c >= '0' && c <= '9') {
-            input[inputPos++] = c;
-            Serial.print(c);
-          }
-        }
-        delay(10);
-      }
-      
-      Serial.println();
-      pinCode = atoi(input);
-    }
-    
-    Serial.print("Using PIN code: ");
-    Serial.println(pinCode);
-    
-    return pinCode;
-  }
-
-  void onPassKeyNotify(uint32_t pass_key) {
-    // Not used
-  }
-
-  bool onConfirmPIN(uint32_t pin) {
-    return true;
-  }
-
-  bool onSecurityRequest() {
-    return true;
-  }
-
-  void onAuthenticationComplete(esp_ble_auth_cmpl_t auth_cmpl) {
-    if (auth_cmpl.success) {
-      Serial.println("Authentication successful");
-      
-      // Save authentication state to preferences
-      _controller->_preferences.begin("bmdcamera", false);
-      _controller->_preferences.putBool("authenticated", true);
-      if (_controller->_pServerAddress) {
-        _controller->_preferences.putString("address", _controller->_pServerAddress->toString().c_str());
-      }
-      _controller->_preferences.end();
-    } else {
-      Serial.println("Authentication failed");
-    }
-  }
-};
-
-#endif // BMD_BLE_CONTROLLER_H
+#endif // BMDBLECONTROLLER_H
