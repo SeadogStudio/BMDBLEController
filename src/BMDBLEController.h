@@ -1,3 +1,4 @@
+// BMDBLEController.h
 #ifndef BMDBLECONTROLLER_H
 #define BMDBLECONTROLLER_H
 
@@ -6,55 +7,92 @@
 #include <BLEUtils.h>
 #include <BLEScan.h>
 #include <BLEAdvertisedDevice.h>
-#include <BLEClient.h>
+#include <Preferences.h>  // For storing bonding info
 
-// BMD Camera Control Service and Characteristic UUIDs (Keep these as defines)
-#define BMD_SERVICE_UUID "291d567a-6d75-11e6-8b77-86f30ca893d3"
-#define BMD_CHARACTERISTIC_UUID "5dd3465f-1aee-4299-8493-d2eca2f5e1bb"
+#define SERVICE_UUID "291d567a-6d75-11e6-8b77-86f30ca893d3"
+#define CHARACTERISTIC_UUID_OUTGOING_CAMERA_CONTROL "f1e4fc02-6d76-11e6-8b77-86f30ca893d3"
+#define CHARACTERISTIC_UUID_INCOMING_CAMERA_CONTROL "f1e4fc03-6d76-11e6-8b77-86f30ca893d3"
+#define CHARACTERISTIC_UUID_TIMECODE "24ae8716-6d75-11e6-8b77-86f30ca893d3"
+#define CHARACTERISTIC_UUID_CAMERA_STATUS "f88737b8-6d75-11e6-8b77-86f30ca893d3" //Added as per guidelines.
+#define CHARACTERISTIC_UUID_DEVICE_NAME  "2a00"
+
 
 class BMDBLEController {
 public:
     BMDBLEController();
-    bool connect(const char* cameraAddress);
-    void disconnect();
-    bool isConnected() const; // Use const for getter methods
-    bool sendCommand(uint16_t command, uint16_t parameter);
-    bool startScan(uint32_t scanDuration = 5);  // Make scan duration configurable
+    ~BMDBLEController();
 
-    // Higher-level command functions (examples - add more as needed)
-    bool startRecording();
-    bool stopRecording();
-    bool setISO(uint16_t isoValue);
-    bool setShutterAngle(float angle);
-    bool setAperture(float apertureValue);
-    bool setWhiteBalance(uint16_t whiteBalanceValue);
-    bool setNDFilter(uint8_t ndFilterValue); //ND filters are integer.
-    bool getBatteryLevel();
+    bool connect();
+    bool disconnect();
+    bool isConnected();
 
-    // Callbacks (optional, but highly recommended for asynchronous handling)
-    void setOnConnectCallback(void (*callback)(void)) { onConnectCallback = callback; }
-    void setOnDisconnectCallback(void (*callback)(void)) { onDisconnectCallback = callback; }
-    void setOnDataReceivedCallback(void (*callback)(uint8_t*, size_t)) { onDataReceivedCallback = callback;}
+    // Send data to the camera
+    bool sendData(const uint8_t* data, size_t length);
+
+
+    // Getters for raw data (for advanced users)
+    const std::string& getRawIncomingData() const { return rawIncomingData; }
+    const std::string& getRawTimecodeData() const { return rawTimecodeData; }
+	const std::string& getRawCameraStatusData() const { return rawCameraStatusData; }
+
+
+	// Data access methods (you'll add parsing functions here)
+	String getTimecode();
+	String getCameraStatus();  // Add more as you parse more data
+
+    // Set the PIN code (to be called from the main sketch)
+    void setPinCode(uint32_t pin) { pinCode = pin; }
+
 
 private:
-    static void notifyCallback(
-        BLERemoteCharacteristic* pBLERemoteCharacteristic,
-        uint8_t* pData,
-        size_t length,
-        bool isNotify);
+    static void controlNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+    static void timecodeNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
+	static void cameraStatusNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify);
 
-    bool connected;
-    BLEAddress *pServerAddress;
-    BLERemoteCharacteristic* pRemoteCharacteristic;
-    BLEClient* pClient;
-    bool doConnect = false;
 
-    // Callbacks
-    void (*onConnectCallback)(void);
-    void (*onDisconnectCallback)(void);
-    void (*onDataReceivedCallback)(uint8_t*, size_t);
+	bool connectToServer(); //Handles conneciton to server
+    bool discoverServices(); // Discover services and characteristics
 
-    bool connectToServer();
+	BLEAddress* pServerAddress;
+    bool deviceFound = false;
+    bool doConnect = false; //Flag to trigger connection
+	bool doScan = false;  // Flag to trigger scanning
+    BLERemoteCharacteristic* pOutgoingCameraControl;
+    BLERemoteCharacteristic* pIncomingCameraControl;
+    BLERemoteCharacteristic* pTimecode;
+	BLERemoteCharacteristic* pCameraStatus; // Added as per guideline
+	BLERemoteCharacteristic* pDeviceName;
+
+
+	std::string rawIncomingData;
+    std::string rawTimecodeData;
+	std::string rawCameraStatusData;
+
+    uint32_t pinCode = 0; // Store the PIN code
+	static BLEScan* pBLEScan; // Declare pBLEScan as a static member
+	static BLEClient* pClient; // Declare pClient
+	static bool is_connected;
+	Preferences preferences;
+
+  // Inner class for advertisement callbacks
+    class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
+        BMDBLEController* bmdController;  // Pointer back to the main class
+
+    public:
+        MyAdvertisedDeviceCallbacks(BMDBLEController* controller) : bmdController(controller) {}
+
+        void onResult(BLEAdvertisedDevice advertisedDevice) override;
+    };
+
+    // Inner class for security callbacks
+	class MySecurityCallbacks : public BLESecurityCallbacks {
+		BMDBLEController* bmdController;
+	public:
+		MySecurityCallbacks(BMDBLEController* controller) : bmdController(controller) {}
+		uint32_t onPassKeyRequest() override;
+		void onAuthenticationComplete(esp_ble_auth_cmpl_t auth_cmpl) override;
+		bool onConfirmPIN(uint32_t pin) override { return true; }; // Always accept (for simplicity)
+	};
 };
 
-#endif
+#endif // BMDBLECONTROLLER_H
