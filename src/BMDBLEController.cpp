@@ -1,362 +1,241 @@
+// BMDBLEController.cpp
 #include "BMDBLEController.h"
 
-static BLEUUID bmdServiceUUID(BMD_SERVICE_UUID);
-static BLEUUID bmdCharacteristicUUID(BMD_CHARACTERISTIC_UUID);
 
-class MyClientCallback : public BLEClientCallbacks {
-    BMDBLEController* bmdController; // Pointer to the BMDBLEController instance
-
-public:
-    MyClientCallback(BMDBLEController* controller) : bmdController(controller) {}
-
-    void onConnect(BLEClient* pclient) {
-        if (bmdController) {
-            bmdController->connected = true;  // Update connected state here
-            if (bmdController->onConnectCallback) {
-                bmdController->onConnectCallback();
-            }
-        }
-    }
-
-    void onDisconnect(BLEClient* pclient) {
-        if (bmdController) {
-            bmdController->connected = false;  // Update connected state here
-            if (bmdController->onDisconnectCallback) {
-                bmdController->onDisconnectCallback();
-            }
-        }
-    }
-};
+BLEScan* BMDBLEController::pBLEScan = nullptr;   // Initialize static member
+BLEClient* BMDBLEController::pClient = nullptr; // Initialize pClient
+bool BMDBLEController::is_connected = false;
 
 
-BMDBLEController::BMDBLEController() : connected(false), pServerAddress(nullptr), pRemoteCharacteristic(nullptr), pClient(nullptr),
-                                        onConnectCallback(nullptr), onDisconnectCallback(nullptr), onDataReceivedCallback(nullptr)
+BMDBLEController::BMDBLEController() :
+    pServerAddress(nullptr),
+    pOutgoingCameraControl(nullptr),
+    pIncomingCameraControl(nullptr),
+    pTimecode(nullptr),
+	pCameraStatus(nullptr),  // Initialize to nullptr
+    rawIncomingData(""),
+    rawTimecodeData("")
 {
-    BLEDevice::init("");
+    BLEDevice::init("ESP32_BMD_Controller");  // Device name can be changed
+    BLEDevice::setPower(ESP_PWR_LVL_P9); // Set max power
+
+	pClient = BLEDevice::createClient();
+
+	//Setup Security
+	BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
+	BLEDevice::setSecurityCallbacks(new MySecurityCallbacks(this));
+	BLESecurity* pSecurity = new BLESecurity();
+	pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
+	pSecurity->setCapability(ESP_IO_CAP_IN);
+	pSecurity->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+
+	pBLEScan = BLEDevice::getScan(); //create new scan
+	pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks(this));
+	pBLEScan->setActiveScan(true); //active scan uses more power, but get results faster
+	pBLEScan->setInterval(100);
+	pBLEScan->setWindow(99);  //should be less or equal RSSI interval
+
 }
 
-
-bool BMDBLEController::connect(const char* cameraAddress) {
+BMDBLEController::~BMDBLEController() {
     if (isConnected()) {
-        Serial.println("Already connected!");
-        return true; // Or false, depending on desired behavior
+        disconnect();
     }
-
-    if (cameraAddress == nullptr || strlen(cameraAddress) == 0) {
-        Serial.println("Error: Invalid camera address.");
-        return false;
-    }
-
-    BLEAddress addr(cameraAddress);
-    pServerAddress = new BLEAddress(addr);
-    doConnect = true;
-
-    if (!connectToServer())
-    {
-        Serial.println("Failed to connect to the camera.");
-        doConnect = false;
-        return false;
-    }
-    return true;
+    delete pServerAddress;
+    // Clean up other resources if necessary
 }
+void BMDBLEController::MyAdvertisedDeviceCallbacks::onResult(BLEAdvertisedDevice advertisedDevice) {
+    Serial.printf("Advertised Device Found: %s\n", advertisedDevice.toString().c_str());
 
-void BMDBLEController::disconnect() {
-    if (pClient) {
-        if (pClient->isConnected()) {
-            pClient->disconnect();
-        }
-        //  No need to delete. BLEDevice::deinit() is never called, so we let the stack deinit.
-        // delete pClient; 
-        // pClient = nullptr;
-    }
-    connected = false; // Immediately mark as disconnected
-}
-
-bool BMDBLEController::isConnected() const {
-    return connected;
-}
-bool BMDBLEController::startScan(uint32_t scanDuration) {
-    BLEScan* pBLEScan = BLEDevice::getScan(); //create new scan
-	pBLEScan->setActiveScan(true); //active scan uses more power, but gets results faster
-	BLEScanResults foundDevices = pBLEScan->start(scanDuration);
-	Serial.print("Devices found: ");
-	Serial.println(foundDevices.getCount());
-	Serial.println("Scan done!");
-    return true;
-}
-
-bool BMDBLEController::connectToServer() {
-    if (pClient == nullptr) {
-          pClient = BLEDevice::createClient();
-    }
-  
-    if (!pClient) {
-        Serial.println("Failed to create BLE client.");
-        return false;
-    }
-    pClient->setClientCallbacks(new MyClientCallback(this));
-
-    // Connect to the BLE Server.
-    if (!pClient->connect(*pServerAddress)) {
-          return false;
-    }
-    Serial.println(" - Connected to server");
-
-    // Obtain a reference to the service we are after in the remote BLE server.
-    BLERemoteService* pRemoteService = pClient->getService(bmdServiceUUID);
-    if (pRemoteService == nullptr) {
-        Serial.print("Failed to find our service UUID: ");
-        Serial.println(bmdServiceUUID.toString().c_str());
-        pClient->disconnect();
-        return false;
-    }
-    Serial.println(" - Found our service");
-
-    // Obtain a reference to the characteristic in the service of the remote BLE server.
-    pRemoteCharacteristic = pRemoteService->getCharacteristic(bmdCharacteristicUUID);
-    if (pRemoteCharacteristic == nullptr) {
-        Serial.print("Failed to find our characteristic UUID: ");
-        Serial.println(bmdCharacteristicUUID.toString().c_str());
-        pClient->disconnect();
-        return false;
-    }
-    Serial.println(" - Found our characteristic");
-
-    // Read the value of the characteristic.
-    if (pRemoteCharacteristic->canRead()) {
-        std::string value = pRemoteCharacteristic->readValue();
-        Serial.print("The characteristic value was: ");
-        Serial.println(value.c_str());
-    }
-
-    if (pRemoteCharacteristic->canNotify()) {
-        pRemoteCharacteristic->registerForNotify(notifyCallback);
-    }
-
-    return true;
-}
-
-void BMDBLEController::notifyCallback(
-    BLERemoteCharacteristic* pBLERemoteCharacteristic,
-    uint8_t* pData,
-    size_t length,
-    bool isNotify) {
-
-    //Serial.print("Notify callback for characteristic ");
-    //Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
-    //Serial.print(" of data length ");
-    //Serial.println(length);
-    //Serial.print("data: ");
-    //Serial.println((char*)pData);
-    if (isNotify && length > 0) {
-      //  Serial.print("Notification received: ");
-        for (int i = 0; i < length; i++) {
-      //      Serial.print(pData[i], HEX);
-      //      Serial.print(" ");
-        }
-      //  Serial.println();
+    if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(BLEUUID(SERVICE_UUID))) {
+        BLEDevice::getScan()->stop();
+        bmdController->pServerAddress = new BLEAddress(advertisedDevice.getAddress());
+        bmdController->doConnect = true;
+		bmdController->doScan = false;
+        Serial.println("Formed a connection to the Blackmagic Camera");
     }
 }
 
-bool BMDBLEController::sendCommand(uint16_t command, uint16_t parameter) {
-    if (!isConnected()) {
-        Serial.println("Error: Not connected.  Cannot send command.");
-        return false;
+uint32_t BMDBLEController::MySecurityCallbacks::onPassKeyRequest() {
+	Serial.print("PassKeyRequest: ");
+	Serial.println(bmdController->pinCode);
+	return bmdController->pinCode;
+}
+
+void BMDBLEController::MySecurityCallbacks::onAuthenticationComplete(esp_ble_auth_cmpl_t auth_cmpl) {
+	if (auth_cmpl.success) {
+		Serial.println("Authentication success!");
+		// Save bonding information
+		bmdController->preferences.begin("camera", false);
+		bmdController->preferences.putBool("authenticated", true);
+		bmdController->preferences.putString("address", bmdController->pServerAddress->toString().c_str());
+		bmdController->preferences.end();
+		is_connected = true;
+
+	}
+	else {
+		Serial.printf("Authentication failed: %d\n", auth_cmpl.fail_reason);
+		is_connected = false;
+	}
+}
+
+
+bool BMDBLEController::connect() {
+    // Check for existing bonding information
+    preferences.begin("camera", false);
+    bool authenticated = preferences.getBool("authenticated", false);
+    String savedAddress = preferences.getString("address", "");
+    preferences.end();
+
+    if (authenticated && savedAddress.length() > 0) {
+        // Reconnect using saved information
+		Serial.println("Attempt Reconnection Using Saved Info");
+        pServerAddress = new BLEAddress(savedAddress.c_str());
+        doConnect = true; // Initiate connection attempt
     }
-
-    if (!pRemoteCharacteristic) {
-        Serial.println("Error: Characteristic not found.");
-        return false;
-    }
-
-    uint8_t payload[5];
-    payload[0] = 0x01; // Length of the command (including length byte)
-    payload[1] = command & 0xFF;
-    payload[2] = (command >> 8) & 0xFF;
-    payload[3] = parameter & 0xFF;
-    payload[4] = (parameter >> 8) & 0xFF;
-    payload[0] = sizeof(payload); // Length of the command +1 (including length byte)
-
-
-    // Check if characteristic is valid AND supports writing
-    if (pRemoteCharacteristic->canWrite()) {
-	    pRemoteCharacteristic->writeValue(payload, sizeof(payload), false);
-        return true;
-    } else {
-		Serial.println("Error: Characteristic does not support writing.");
-        return false;
+	else {
+		//If not authenticated Start scan
+		Serial.println("Start scanning for BMD Camera...");
+		doScan = true;
 	}
 
+	if (doConnect) {
+		if (connectToServer()) {
+			Serial.println("Connected to the BLE Server.");
+		}
+		else {
+			Serial.println("Failed to connect to the server, restarting scan");
+			doScan = true; // Restart scanning if connection fails.
+		}
+		doConnect = false; // Reset the flag.
+	}
+
+	if (doScan) {
+		// Start scanning for devices
+		Serial.println("Scanning Started");
+		BLEScanResults foundDevices = pBLEScan->start(5, false); // Scan for 5 seconds
+		Serial.print("Devices found: ");
+		Serial.println(foundDevices.getCount());
+		pBLEScan->clearResults();   // delete results fromBLEScan buffer to release memory
+	}
+    return isConnected();
 }
 
 
-// Higher-level command implementations (examples)
-bool BMDBLEController::startRecording() {
-    return sendCommand(0x0202, 0x0001); //  Start recording
+
+bool BMDBLEController::connectToServer() {
+
+	if (!pClient->connect(*pServerAddress)) {
+      // Connection failed
+		Serial.println("Connection Failed");
+		pClient->disconnect();
+      return false;
+    }
+    if (!discoverServices())
+    {
+        return false;
+    }
+
+    return true;
 }
 
-bool BMDBLEController::stopRecording() {
-    return sendCommand(0x0202, 0x0000); // Stop recording
+bool BMDBLEController::discoverServices() {
+     BLERemoteService* pRemoteService = pClient->getService(SERVICE_UUID);
+    if (pRemoteService == nullptr) {
+        Serial.print("Failed to find our service UUID: ");
+        Serial.println(SERVICE_UUID);
+        pClient->disconnect();
+        return false;
+    }
+    Serial.println("Found our service");
+
+    // Obtain references to the characteristics
+    pOutgoingCameraControl = pRemoteService->getCharacteristic(CHARACTERISTIC_UUID_OUTGOING_CAMERA_CONTROL);
+    pIncomingCameraControl = pRemoteService->getCharacteristic(CHARACTERISTIC_UUID_INCOMING_CAMERA_CONTROL);
+    pTimecode = pRemoteService->getCharacteristic(CHARACTERISTIC_UUID_TIMECODE);
+	pCameraStatus = pRemoteService->getCharacteristic(CHARACTERISTIC_UUID_CAMERA_STATUS);
+	pDeviceName = pRemoteService->getCharacteristic(CHARACTERISTIC_UUID_DEVICE_NAME);  // Get device name characteristic
+    if (pOutgoingCameraControl == nullptr || pIncomingCameraControl == nullptr || pTimecode == nullptr || pCameraStatus == nullptr) {
+        Serial.println("Failed to find one or more characteristics");
+        pClient->disconnect();
+        return false;
+    }
+    Serial.println("Found our characteristics");
+	// Trigger bonding by writing to device name (if not already bonded)
+	if (!isConnected()) {
+		Serial.println("Writing to device name to initiate bonding...");
+		std::string deviceName = "ESP32";
+		pDeviceName->writeValue(deviceName.c_str(), deviceName.length());
+	}
+    // Register for notifications
+    pIncomingCameraControl->registerForNotify(controlNotifyCallback);
+    pTimecode->registerForNotify(timecodeNotifyCallback);
+	pCameraStatus->registerForNotify(cameraStatusNotifyCallback);
+
+    return true;
+
 }
 
-bool BMDBLEController::setISO(uint16_t isoValue) {
-      //0x0000: Auto
-      //0x0064:  100
-      //0x00C8:  200
-      //0x0190:  400
-      //0x0320:  800
-      //0x0640: 1600
-      //0x0C80: 3200
-    return sendCommand(0x0301, isoValue);
+bool BMDBLEController::disconnect() {
+    if (isConnected()) {
+        pClient->disconnect();
+        is_connected = false; // Update connection status
+		return true;
+    }
+	return false;
 }
 
-bool BMDBLEController::setShutterAngle(float angle) {
-        //0x0000: Auto
-        //0x002D: 45.0°
-        //0x005A: 90.0°
-        //0x00B4: 180.0°
-        //0x0168: 360.0°
-    uint16_t angleValue = static_cast<uint16_t>(angle * 64 / 9); //angle * (0xFFFF / 360.f)
-    return sendCommand(0x0303, angleValue);
-
+bool BMDBLEController::isConnected() {
+	//return pClient->isConnected(); //Using is_connected is better
+	return is_connected;
 }
 
-bool BMDBLEController::setAperture(float apertureValue) {
-    //0x0000: Auto
-    //0x0038:   1.0
-    //0x0042:   1.4
-    //0x0044:   1.7
-    //0x004B:   2.0
-    //0x004F:   2.2
-    //0x0053:   2.5
-    //0x0058:   2.8
-    //0x005C:   3.2
-    //0x0060:   3.5
-    //0x0063:   4.0
-    //0x0067:   4.5
-    //0x006B:   5.0
-    //0x006F:   5.6
-    //0x0075:   6.3
-    //0x007A:   7.1
-    //0x007F:   8.0
-    //0x0088:   9.0
-    //0x008C:  10.0
-    //0x0090:  11.0
-    //0x0096:  13.0
-    //0x009B:  14.0
-    //0x009F:  16.0
-    //0x00A5:  18.0
-    //0x00A9:  20.0
-    //0x00AD:  22.0
-    uint16_t apertureSetParameter = 0;
-    if (apertureValue == 1.0) apertureSetParameter = 0x0038;
-    else if (apertureValue == 1.4) apertureSetParameter = 0x0042;
-    else if (apertureValue == 1.7) apertureSetParameter = 0x0044;
-    else if (apertureValue == 2.0) apertureSetParameter = 0x004B;
-    else if (apertureValue == 2.2) apertureSetParameter = 0x004F;
-    else if (apertureValue == 2.5) apertureSetParameter = 0x0053;
-    else if (apertureValue == 2.8) apertureSetParameter = 0x0058;
-    else if (apertureValue == 3.2) apertureSetParameter = 0x005C;
-    else if (apertureValue == 3.5) apertureSetParameter = 0x0060;
-    else if (apertureValue == 4.0) apertureSetParameter = 0x0063;
-    else if (apertureValue == 4.5) apertureSetParameter = 0x0067;
-    else if (apertureValue == 5.0) apertureSetParameter = 0x006B;
-    else if (apertureValue == 5.6) apertureSetParameter = 0x006F;
-    else if (apertureValue == 6.3) apertureSetParameter = 0x0075;
-    else if (apertureValue == 7.1) apertureSetParameter = 0x007A;
-    else if (apertureValue == 8.0) apertureSetParameter = 0x007F;
-    else if (apertureValue == 9.0) apertureSetParameter = 0x0088;
-    else if (apertureValue == 10.0) apertureSetParameter = 0x008C;
-    else if (apertureValue == 11.0) apertureSetParameter = 0x0090;
-    else if (apertureValue == 13.0) apertureSetParameter = 0x0096;
-    else if (apertureValue == 14.0) apertureSetParameter = 0x009B;
-    else if (apertureValue == 16.0) apertureSetParameter = 0x009F;
-    else if (apertureValue == 18.0) apertureSetParameter = 0x00A5;
-    else if (apertureValue == 20.0) apertureSetParameter = 0x00A9;
-    else if (apertureValue == 22.0) apertureSetParameter = 0x00AD;
-    else  apertureSetParameter = 0;
-
-    return sendCommand(0x0305, apertureSetParameter);
+bool BMDBLEController::sendData(const uint8_t* data, size_t length) {
+    if (isConnected() && pOutgoingCameraControl != nullptr) {
+        pOutgoingCameraControl->writeValue((uint8_t*)data, length); // Cast away const
+        return true;
+    }
+    return false;
 }
 
-bool BMDBLEController::setWhiteBalance(uint16_t whiteBalanceValue) {
-   //0x0000: Auto
-   //0x07D0: 2000
-   //0x09C4: 2500
-   //0x0BB8: 3000
-   //0x0C80: 3200
-   //0x0D48: 3400
-   //0x0E10: 3600
-   //0x0ED8: 3800
-   //0x0FA0: 4000
-   //0x1068: 4200
-   //0x1130: 4400
-   //0x11F8: 4600
-   //0x12C0: 4800
-   //0x1388: 5000
-   //0x1450: 5200
-   //0x1518: 5400
-   //0x15E0: 5600
-   //0x16A8: 5800
-   //0x1770: 6000
-   //0x1838: 6200
-   //0x1900: 6400
-   //0x19C8: 6600
-   //0x1A90: 6800
-   //0x1B58: 7000
-   //0x1C20: 7200
-   //0x1CE8: 7400
-   //0x1DB0: 7600
-   //0x1E78: 7800
-   //0x1F40: 8000
-   //0x2008: 8200
-   //0x20D0: 8400
-   //0x2198: 8600
-   //0x2260: 8800
-   //0x2328: 9000
-   //0x23F0: 9200
-   //0x24B8: 9400
-   //0x2580: 9600
-   //0x2648: 9800
-    return sendCommand(0x0308, whiteBalanceValue);
+// --- Notification Callbacks ---
+
+void BMDBLEController::controlNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
+    // Store raw data
+   ((BMDBLEController*)pBLERemoteCharacteristic->getRemoteService()->getClient()->getData())->rawIncomingData = std::string((char*)pData, length);
+
+    // Add your parsing logic here.  Example:
+    // if (length >= 2 && pData[0] == 0x01) { // Example:  Check for a specific command
+    //     // Parse the data...
+    // }
+	Serial.print("Incoming Camera Control Notify callback, Data: ");
+	Serial.println(((BMDBLEController*)pBLERemoteCharacteristic->getRemoteService()->getClient()->getData())->rawIncomingData.c_str());
 }
 
-bool BMDBLEController::setNDFilter(uint8_t ndFilterValue) { //ND filters are integer.
-    //0: Clear
-    //1: 2 stops
-    //2: 4 stops
-    //3: 6 stops
-    return sendCommand(0x030c, ndFilterValue);
+void BMDBLEController::timecodeNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
+	// Store raw data
+	((BMDBLEController*)pBLERemoteCharacteristic->getRemoteService()->getClient()->getData())->rawTimecodeData = std::string((char*)pData, length);
+	Serial.print("Timecode Notify callback, Data: ");
+	Serial.println(((BMDBLEController*)pBLERemoteCharacteristic->getRemoteService()->getClient()->getData())->rawTimecodeData.c_str());
+
+    // Parse Timecode Here (Example, adapt to actual format)
+	
 }
-bool BMDBLEController::getBatteryLevel()
+void BMDBLEController::cameraStatusNotifyCallback(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify)
 {
-    if (!isConnected()) {
-        Serial.println("Error: Not connected.  Cannot send command.");
-        return false;
-    }
+	// Store raw data
+	((BMDBLEController*)pBLERemoteCharacteristic->getRemoteService()->getClient()->getData())->rawCameraStatusData = std::string((char*)pData, length);
+	Serial.print("Camera Status Notify callback, Data: ");
+	Serial.println(((BMDBLEController*)pBLERemoteCharacteristic->getRemoteService()->getClient()->getData())->rawCameraStatusData.c_str());
 
-    if (!pRemoteCharacteristic) {
-        Serial.println("Error: Characteristic not found.");
-        return false;
-    }
+}
 
-    // Check if characteristic is valid AND supports reading
-    if (pRemoteCharacteristic->canRead()) {
-        std::string value = pRemoteCharacteristic->readValue();
-        // Parse the battery level from the value string (you'll need to figure out the format)
-        // For example, if the value is a single byte representing the percentage:
-        if (value.length() > 0) {
-            uint8_t batteryLevel = value[0];
-            Serial.print("Battery Level: ");
-            Serial.print(batteryLevel);
-            Serial.println("%");
-          return true;
-        } else {
-            Serial.println("Error: Empty battery level response.");
-            return false;
-        }
-    } else {
-        Serial.println("Error: Characteristic does not support reading.");
-        return false;
-    }
+String BMDBLEController::getTimecode()
+{
+	return String(rawTimecodeData.c_str()); //Simple return you MUST PARSE IT 
+}
+
+String BMDBLEController::getCameraStatus()
+{
+	return String(rawCameraStatusData.c_str()); //Simple return you MUST PARSE IT
 }
