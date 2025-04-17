@@ -1,0 +1,41 @@
+BMDBLEController/
+├── src/
+│   ├── BMDBLEController.h           // Main library header
+│   ├── BMDBLEController.cpp         // Main library implementation
+│   │
+│   ├── Interfaces/
+│   │   ├── PinInputInterface.h      // Abstract PIN input interface
+│   │   └── CallbackInterface.h      // Callback interfaces
+│   │
+│   ├── Protocol/
+│   │   ├── ProtocolConstants.h      // UUID, category, parameter definitions
+│   │   ├── IncomingCameraControlManager.h  // Incoming data management
+│   │   └── ProtocolUtils.h          // Utility functions for protocol handling
+│   │
+│   ├── Connection/
+│   │   ├── BLEConnectionManager.h   // BLE connection handling
+│   │   └── BondingManager.h         // Bonding information management
+│   │
+│   ├── Controls/
+│   │   ├── LensControl.h            // Lens-related controls
+│   │   ├── VideoControl.h           // Video settings controls
+│   │   ├── AudioControl.h           // Audio-related controls
+│   │   └── TransportControl.h       // Recording/playback controls
+│   │
+│   └── Input/
+│       ├── SerialPinInputMethod.h   // Serial PIN input method
+│       └── DefaultPinInputMethod.h  // Fallback PIN input method
+│
+├── examples/
+│   ├── BasicConnection/
+│   │   └── BasicConnection.ino      // Simple connection test
+│   ├── FocusControl/
+│   │   └── FocusControl.ino         // Focus control example
+│   ├── RecordingTest/
+│   │   └── RecordingTest.ino        // Recording toggle example
+│   └── ProtocolExplorer/
+│       └── ProtocolExplorer.ino     // Explore camera parameters
+│
+├── keywords.txt                     // Arduino IDE syntax highlighting
+├── library.properties               // Library metadata
+└── README.md                        // Documentation and usage guide
