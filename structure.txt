@@ -9,8 +9,8 @@ BMDBLEController/
 │   │
 │   ├── Protocol/
 │   │   ├── ProtocolConstants.h      // UUID, category, parameter definitions
-│   │   ├── IncomingCameraControlManager.h  // Incoming data management
-│   │   └── ProtocolUtils.h          // Utility functions for protocol handling
+│   │   ├── IncomingCameraControlManager.h  // Incoming data management (done)
+│   │   └── ProtocolUtils.h          // Utility functions for protocol handling (done)
 │   │
 │   ├── Connection/
 │   │   ├── BLEConnectionManager.h   // BLE connection handling
@@ -36,6 +36,6 @@ BMDBLEController/
 │   └── ProtocolExplorer/
 │       └── ProtocolExplorer.ino     // Explore camera parameters
 │
-├── keywords.txt                     // Arduino IDE syntax highlighting
+├── keywords.txt                     // Arduino IDE syntax highlighting (done)
 ├── library.properties               // Library metadata
 └── README.md                        // Documentation and usage guide
